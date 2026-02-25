@@ -2,17 +2,30 @@
  * mpqfs — Minimal MPQ v1 archive reader/writer
  * SPDX-License-Identifier: MIT
  *
- * MPQ v1 writer: creates archives in the basic style used by the
- * original Diablo 1 for its save-game files.
+ * MPQ v1 writer: creates archives in the style used by DevilutionX
+ * for its save-game files (.sv / .hsv).
  *
  * The produced archive layout is:
  *
  *   Offset 0x0000:  MPQ Header (32 bytes)
- *   Offset 0x0020:  File data (concatenated, uncompressed, no encryption)
- *   Offset varies:   Hash table (encrypted with standard key)
- *   Offset varies:   Block table (encrypted with standard key)
+ *   Offset 0x0020:  Block table (hash_table_size * 16 bytes, encrypted)
+ *   Offset varies:  Hash table  (hash_table_size * 16 bytes, encrypted)
+ *   Offset varies:  File data   (PKWARE implode compressed, with sector
+ *                                offset tables; no file-level encryption)
  *
- * All files are stored uncompressed and without file-level encryption.
+ * This layout matches DevilutionX's MpqWriter exactly:
+ *   - Block table and hash table are the same size (hash_table_size entries)
+ *   - Both tables are placed immediately after the header, before file data
+ *   - Block table comes first, then hash table
+ *   - Unused block table entries are zeroed out
+ *
+ * Files are compressed with PKWARE DCL implode (sector-based).  Each
+ * compressed file's on-disk data consists of a sector offset table
+ * followed by the compressed sector payloads.  Sectors that do not
+ * benefit from compression are stored raw.  If no sector in a file
+ * compresses, the file is stored without an offset table and without
+ * the IMPLODE flag.
+ *
  * Hash and block tables are encrypted with the standard MPQ keys
  * "(hash table)" and "(block table)" respectively, exactly as the
  * original game does.
@@ -28,6 +41,7 @@
 #include "mpq_writer.h"
 #include "mpq_crypto.h"
 #include "mpq_archive.h"
+#include "mpq_implode.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -144,7 +158,7 @@ static mpqfs_writer_t *mpq_writer_init(FILE *fp, int owns_fd,
 }
 
 /* -----------------------------------------------------------------------
- * Public API: create
+ * Public API: create a writer
  * ----------------------------------------------------------------------- */
 
 mpqfs_writer_t *mpqfs_writer_create(const char *path,
@@ -167,7 +181,8 @@ mpqfs_writer_t *mpqfs_writer_create(const char *path,
     return mpq_writer_init(fp, 1, hash_table_size, "mpqfs_writer_create");
 }
 
-mpqfs_writer_t *mpqfs_writer_create_fp(FILE *fp, uint32_t hash_table_size)
+mpqfs_writer_t *mpqfs_writer_create_fp(FILE *fp,
+                                       uint32_t hash_table_size)
 {
     mpq_crypto_init();
 
@@ -181,7 +196,8 @@ mpqfs_writer_t *mpqfs_writer_create_fp(FILE *fp, uint32_t hash_table_size)
 
 #if MPQFS_HAS_FDOPEN
 
-mpqfs_writer_t *mpqfs_writer_create_fd(int fd, uint32_t hash_table_size)
+mpqfs_writer_t *mpqfs_writer_create_fd(int fd,
+                                       uint32_t hash_table_size)
 {
     mpq_crypto_init();
 
@@ -203,7 +219,7 @@ mpqfs_writer_t *mpqfs_writer_create_fd(int fd, uint32_t hash_table_size)
 #endif /* MPQFS_HAS_FDOPEN */
 
 /* -----------------------------------------------------------------------
- * Public API: add file
+ * Public API: add a file to the archive
  * ----------------------------------------------------------------------- */
 
 bool mpqfs_writer_add_file(mpqfs_writer_t *writer, const char *filename,
@@ -352,23 +368,141 @@ static uint32_t *mpq_build_hash_table(mpqfs_writer_t *writer)
 }
 
 /* -----------------------------------------------------------------------
+ * Internal: per-file compressed data (produced by Phase 1)
+ * ----------------------------------------------------------------------- */
+
+typedef struct mpqfs_compressed_file {
+    uint8_t  *data;           /* Sector offset table + compressed sectors   */
+    uint32_t  total_size;     /* Total on-disk size (offset table + sectors) */
+    uint32_t  file_size;      /* Original uncompressed size                 */
+    uint32_t  flags;          /* Block flags (EXISTS, IMPLODE, etc.)        */
+} mpqfs_compressed_file_t;
+
+/* -----------------------------------------------------------------------
+ * Internal: compress a single file into sector-based PKWARE implode format
+ *
+ * Returns a heap-allocated mpqfs_compressed_file_t with the compressed
+ * data (sector offset table + compressed sectors concatenated).
+ *
+ * For zero-length files, data is NULL and total_size is 0.
+ * ----------------------------------------------------------------------- */
+
+static int mpq_compress_file(const mpqfs_writer_file_t *file,
+                             uint16_t sector_size_shift,
+                             mpqfs_compressed_file_t *out)
+{
+    uint32_t file_size   = file->size;
+    uint32_t sector_size = 512u << sector_size_shift;
+    int      dict_bits   = (int)sector_size_shift + 6;  /* shift=3 → bits=6 (4096) */
+
+    /* Clamp dict_bits to valid range [4..6]. */
+    if (dict_bits < 4) dict_bits = 4;
+    if (dict_bits > 6) dict_bits = 6;
+
+    out->file_size = file_size;
+
+    if (file_size == 0) {
+        out->data       = NULL;
+        out->total_size = 0;
+        out->flags      = MPQ_FILE_EXISTS;
+        return 0;
+    }
+
+    uint32_t sector_count = (file_size + sector_size - 1) / sector_size;
+    uint32_t offset_table_entries = sector_count + 1;
+    uint32_t offset_table_bytes   = offset_table_entries * 4;
+
+    /* Allocate worst-case output: offset table + each sector uncompressed. */
+    size_t max_out = (size_t)offset_table_bytes + (size_t)file_size;
+    /* Add headroom for compression overhead on incompressible data. */
+    max_out += sector_count * 64;
+
+    uint8_t *buf = (uint8_t *)malloc(max_out);
+    if (!buf)
+        return -1;
+
+    /* We'll fill in the offset table after compressing all sectors. */
+    uint32_t *offset_table = (uint32_t *)malloc(offset_table_entries * sizeof(uint32_t));
+    if (!offset_table) {
+        free(buf);
+        return -1;
+    }
+
+    /* Compress each sector. */
+    uint32_t write_cursor = offset_table_bytes;  /* first sector starts after offset table */
+    int any_compressed = 0;
+
+    for (uint32_t s = 0; s < sector_count; s++) {
+        uint32_t src_offset = s * sector_size;
+        uint32_t remaining  = file_size - src_offset;
+        uint32_t this_size  = (remaining < sector_size) ? remaining : sector_size;
+
+        offset_table[s] = write_cursor;
+
+        /* Try to compress this sector. */
+        size_t comp_size = max_out - write_cursor;
+        int rc = pk_implode_sector(file->data + src_offset, this_size,
+                                   buf + write_cursor, &comp_size, dict_bits);
+
+        if (rc == PK_OK && comp_size < this_size) {
+            /* Compression helped. */
+            write_cursor += (uint32_t)comp_size;
+            any_compressed = 1;
+        } else {
+            /* Store uncompressed (comp_size == this_size means no gain). */
+            memcpy(buf + write_cursor, file->data + src_offset, this_size);
+            write_cursor += this_size;
+        }
+    }
+
+    offset_table[sector_count] = write_cursor;  /* end sentinel */
+
+    if (any_compressed) {
+        /* Write the offset table into the buffer. */
+        for (uint32_t i = 0; i < offset_table_entries; i++) {
+            mpqfs_write_le32(buf + i * 4, offset_table[i]);
+        }
+
+        out->data       = buf;
+        out->total_size = write_cursor;
+        out->flags      = MPQ_FILE_EXISTS | MPQ_FILE_IMPLODE;
+    } else {
+        /* No sector benefited from compression — store the file
+         * completely uncompressed (no offset table, no IMPLODE flag).
+         * This matches what DevilutionX does when compression doesn't help. */
+        memcpy(buf, file->data, file_size);
+        out->data       = buf;
+        out->total_size = file_size;
+        out->flags      = MPQ_FILE_EXISTS;
+    }
+
+    free(offset_table);
+    return 0;
+}
+
+/* -----------------------------------------------------------------------
  * Internal: build and encrypt the block table
  *
- * |file_offsets| is an array of file_count offsets (relative to the
- * archive start) where each file's data was written.
+ * The block table has hash_table_size entries to match DevilutionX's
+ * format.  Entries 0..file_count-1 are populated with file metadata;
+ * the remaining entries are zeroed (unallocated).
  *
- * Returns a heap-allocated buffer of (file_count * 16) bytes
+ * |file_offsets| is an array of file_count offsets (relative to the
+ * archive start) where each file's data will be written.
+ *
+ * |compressed| is an array of file_count compressed-file descriptors
+ * giving the on-disk size and flags for each file.
+ *
+ * Returns a heap-allocated buffer of (hash_table_size * 16) bytes
  * containing the encrypted block table, ready to write to disk.
  * The caller must free() the returned buffer.
  * ----------------------------------------------------------------------- */
 
 static uint32_t *mpq_build_block_table(mpqfs_writer_t *writer,
-                                       const uint32_t *file_offsets)
+                                       const uint32_t *file_offsets,
+                                       const mpqfs_compressed_file_t *compressed)
 {
-    uint32_t count = writer->file_count;
-    if (count == 0)
-        return NULL;
-
+    uint32_t count = writer->hash_table_size;
     size_t   dword_count = (size_t)count * 4;
     size_t   total_bytes = dword_count * sizeof(uint32_t);
 
@@ -376,14 +510,17 @@ static uint32_t *mpq_build_block_table(mpqfs_writer_t *writer,
     if (!table)
         return NULL;
 
-    for (uint32_t i = 0; i < count; i++) {
-        uint32_t base = i * 4;
-        uint32_t file_size = writer->files[i].size;
+    /* Zero the entire table (unused entries stay zeroed). */
+    memset(table, 0, total_bytes);
 
-        table[base + 0] = file_offsets[i];  /* offset (relative to archive start) */
-        table[base + 1] = file_size;        /* compressed_size = file_size (uncompressed) */
-        table[base + 2] = file_size;        /* file_size */
-        table[base + 3] = MPQ_FILE_EXISTS;  /* flags: only MPQ_FILE_EXISTS */
+    /* Populate entries for actual files. */
+    for (uint32_t i = 0; i < writer->file_count; i++) {
+        uint32_t base = i * 4;
+
+        table[base + 0] = file_offsets[i];              /* offset */
+        table[base + 1] = compressed[i].total_size;     /* compressed_size */
+        table[base + 2] = compressed[i].file_size;      /* file_size */
+        table[base + 3] = compressed[i].flags;          /* flags */
     }
 
     /* Encrypt the block table in-place. */
@@ -396,17 +533,26 @@ static uint32_t *mpq_build_block_table(mpqfs_writer_t *writer,
 /* -----------------------------------------------------------------------
  * Public API: close (finalize and write the archive)
  *
- * The archive is laid out as:
+ * The archive is laid out as (matching DevilutionX's MpqWriter):
  *
  *   Offset 0x0000:  MPQ Header       (32 bytes)
- *   Offset 0x0020:  File 0 data      (files[0].size bytes)
- *                    File 1 data      (files[1].size bytes)
- *                    ...
+ *   Offset 0x0020:  Block table      (hash_table_size * 16 bytes, encrypted)
  *   Offset varies:  Hash table       (hash_table_size * 16 bytes, encrypted)
- *   Offset varies:  Block table      (file_count * 16 bytes, encrypted)
+ *   Offset varies:  File data        (PKWARE implode compressed, with
+ *                                     sector offset tables)
  *
- * The header is written last (seeking back to offset 0) so that all
- * sizes and offsets are known.
+ * Both the block table and hash table have hash_table_size entries.
+ * Block table entries beyond file_count are zeroed (unallocated).
+ *
+ * Each file's on-disk data consists of:
+ *   [sector offset table]  (sector_count+1) × 4 bytes, little-endian
+ *   [compressed sector 0]  variable size
+ *   [compressed sector 1]  variable size
+ *   ...
+ *
+ * Sectors that don't compress are stored raw (the sector offset table
+ * records the sizes either way).  If NO sector in a file compresses,
+ * the file is stored without an offset table and without the IMPLODE flag.
  * ----------------------------------------------------------------------- */
 
 bool mpqfs_writer_close(mpqfs_writer_t *writer)
@@ -418,6 +564,7 @@ bool mpqfs_writer_close(mpqfs_writer_t *writer)
 
     FILE *fp = writer->fp;
     bool success = true;
+    mpqfs_compressed_file_t *compressed = NULL;
 
     if (!fp) {
         mpq_writer_set_error(writer, "mpqfs_writer_close: no file handle");
@@ -425,147 +572,169 @@ bool mpqfs_writer_close(mpqfs_writer_t *writer)
         goto cleanup;
     }
 
-    /* ---- Phase 1: compute layout ---- */
+    /* ---- Phase 1: compress all files ---- */
 
-    uint32_t header_size = MPQ_HEADER_SIZE_V1;  /* 32 */
-    uint32_t hash_table_size  = writer->hash_table_size;
-    uint32_t block_table_size = writer->file_count;
-
-    uint32_t hash_table_bytes  = hash_table_size  * 16;
-    uint32_t block_table_bytes = block_table_size * 16;
-
-    /* Compute file data offsets (relative to archive start = 0). */
-    uint32_t *file_offsets = NULL;
     if (writer->file_count > 0) {
-        file_offsets = (uint32_t *)malloc(writer->file_count * sizeof(uint32_t));
-        if (!file_offsets) {
+        compressed = (mpqfs_compressed_file_t *)calloc(
+            writer->file_count, sizeof(mpqfs_compressed_file_t));
+        if (!compressed) {
             mpq_writer_set_error(writer,
                                  "mpqfs_writer_close: out of memory");
             success = false;
             goto cleanup;
         }
-    }
 
-    uint32_t data_cursor = header_size;
-    for (uint32_t i = 0; i < writer->file_count; i++) {
-        file_offsets[i] = data_cursor;
-        data_cursor += writer->files[i].size;
-    }
-
-    uint32_t hash_table_offset  = data_cursor;
-    uint32_t block_table_offset = hash_table_offset + hash_table_bytes;
-    uint32_t archive_size       = block_table_offset + block_table_bytes;
-
-    /* ---- Phase 2: build encrypted tables ---- */
-
-    uint32_t *hash_table = mpq_build_hash_table(writer);
-    if (!hash_table) {
-        mpq_writer_set_error(writer,
-                             "mpqfs_writer_close: failed to build hash table");
-        free(file_offsets);
-        success = false;
-        goto cleanup;
-    }
-
-    uint32_t *block_table = NULL;
-    if (writer->file_count > 0) {
-        block_table = mpq_build_block_table(writer, file_offsets);
-        if (!block_table) {
-            mpq_writer_set_error(writer,
-                                 "mpqfs_writer_close: failed to build block table");
-            free(hash_table);
-            free(file_offsets);
-            success = false;
-            goto cleanup;
-        }
-    }
-
-    free(file_offsets);
-    file_offsets = NULL;
-
-    /* ---- Phase 3: write the archive ---- */
-
-    /* Seek to the beginning. */
-    if (fseek(fp, 0, SEEK_SET) != 0) {
-        mpq_writer_set_error(writer,
-                             "mpqfs_writer_close: seek failed: %s",
-                             strerror(errno));
-        free(hash_table);
-        free(block_table);
-        success = false;
-        goto cleanup;
-    }
-
-    /* Write the MPQ header. */
-    {
-        uint8_t hdr[MPQ_HEADER_SIZE_V1];
-        memset(hdr, 0, sizeof(hdr));
-
-        mpqfs_write_le32(hdr +  0, MPQ_SIGNATURE);
-        mpqfs_write_le32(hdr +  4, header_size);
-        mpqfs_write_le32(hdr +  8, archive_size);
-        mpqfs_write_le16(hdr + 12, 0);                          /* format_version = 0 (v1) */
-        mpqfs_write_le16(hdr + 14, writer->sector_size_shift);  /* sector_size_shift */
-        mpqfs_write_le32(hdr + 16, hash_table_offset);
-        mpqfs_write_le32(hdr + 20, block_table_offset);
-        mpqfs_write_le32(hdr + 24, hash_table_size);
-        mpqfs_write_le32(hdr + 28, block_table_size);
-
-        if (mpq_raw_write(fp, hdr, sizeof(hdr)) != 0) {
-            mpq_writer_set_error(writer,
-                                 "mpqfs_writer_close: failed to write header");
-            free(hash_table);
-            free(block_table);
-            success = false;
-            goto cleanup;
-        }
-    }
-
-    /* Write file data. */
-    for (uint32_t i = 0; i < writer->file_count; i++) {
-        if (writer->files[i].size > 0) {
-            if (mpq_raw_write(fp, writer->files[i].data,
-                              writer->files[i].size) != 0) {
+        for (uint32_t i = 0; i < writer->file_count; i++) {
+            if (mpq_compress_file(&writer->files[i],
+                                  writer->sector_size_shift,
+                                  &compressed[i]) != 0) {
                 mpq_writer_set_error(writer,
-                                     "mpqfs_writer_close: failed to write "
-                                     "file data for '%s'",
-                                     writer->files[i].filename);
-                free(hash_table);
-                free(block_table);
+                                     "mpqfs_writer_close: failed to compress "
+                                     "file '%s'", writer->files[i].filename);
                 success = false;
                 goto cleanup;
             }
         }
     }
 
-    /* Write the hash table (already encrypted). */
-    if (mpq_raw_write(fp, hash_table, hash_table_bytes) != 0) {
-        mpq_writer_set_error(writer,
-                             "mpqfs_writer_close: failed to write hash table");
-        free(hash_table);
-        free(block_table);
-        success = false;
-        goto cleanup;
-    }
-    free(hash_table);
+    /* ---- Phase 2: compute layout and build tables ---- */
 
-    /* Write the block table (already encrypted). */
-    if (block_table_bytes > 0) {
-        if (mpq_raw_write(fp, block_table, block_table_bytes) != 0) {
+    {
+        uint32_t header_size = MPQ_HEADER_SIZE_V1;  /* 32 */
+        uint32_t hash_table_size  = writer->hash_table_size;
+        uint32_t table_entry_bytes = hash_table_size * 16;
+
+        uint32_t block_table_offset = header_size;
+        uint32_t hash_table_offset  = block_table_offset + table_entry_bytes;
+        uint32_t data_start         = hash_table_offset + table_entry_bytes;
+
+        /* Compute file data offsets using compressed sizes. */
+        uint32_t *file_offsets = NULL;
+        if (writer->file_count > 0) {
+            file_offsets = (uint32_t *)malloc(writer->file_count * sizeof(uint32_t));
+            if (!file_offsets) {
+                mpq_writer_set_error(writer,
+                                     "mpqfs_writer_close: out of memory");
+                success = false;
+                goto cleanup;
+            }
+        }
+
+        uint32_t data_cursor = data_start;
+        for (uint32_t i = 0; i < writer->file_count; i++) {
+            file_offsets[i] = data_cursor;
+            data_cursor += compressed[i].total_size;
+        }
+
+        uint32_t archive_size = data_cursor;
+
+        /* Build encrypted tables. */
+        uint32_t *block_table = mpq_build_block_table(writer, file_offsets,
+                                                      compressed);
+        free(file_offsets);
+        file_offsets = NULL;
+
+        if (!block_table) {
             mpq_writer_set_error(writer,
-                                 "mpqfs_writer_close: failed to write "
-                                 "block table");
+                                 "mpqfs_writer_close: failed to build block table");
+            success = false;
+            goto cleanup;
+        }
+
+        uint32_t *hash_table = mpq_build_hash_table(writer);
+        if (!hash_table) {
+            mpq_writer_set_error(writer,
+                                 "mpqfs_writer_close: failed to build hash table");
             free(block_table);
             success = false;
             goto cleanup;
         }
-    }
-    free(block_table);
 
-    /* Flush to ensure everything is on disk. */
-    fflush(fp);
+        /* ---- Phase 3: write the archive ---- */
+
+        if (fseek(fp, 0, SEEK_SET) != 0) {
+            mpq_writer_set_error(writer,
+                                 "mpqfs_writer_close: seek failed: %s",
+                                 strerror(errno));
+            free(hash_table);
+            free(block_table);
+            success = false;
+            goto cleanup;
+        }
+
+        /* Write the MPQ header. */
+        {
+            uint8_t hdr[MPQ_HEADER_SIZE_V1];
+            memset(hdr, 0, sizeof(hdr));
+
+            mpqfs_write_le32(hdr +  0, MPQ_SIGNATURE);
+            mpqfs_write_le32(hdr +  4, header_size);
+            mpqfs_write_le32(hdr +  8, archive_size);
+            mpqfs_write_le16(hdr + 12, 0);
+            mpqfs_write_le16(hdr + 14, writer->sector_size_shift);
+            mpqfs_write_le32(hdr + 16, hash_table_offset);
+            mpqfs_write_le32(hdr + 20, block_table_offset);
+            mpqfs_write_le32(hdr + 24, hash_table_size);
+            mpqfs_write_le32(hdr + 28, hash_table_size);
+
+            if (mpq_raw_write(fp, hdr, sizeof(hdr)) != 0) {
+                mpq_writer_set_error(writer,
+                                     "mpqfs_writer_close: failed to write header");
+                free(hash_table);
+                free(block_table);
+                success = false;
+                goto cleanup;
+            }
+        }
+
+        /* Write the block table. */
+        if (mpq_raw_write(fp, block_table, table_entry_bytes) != 0) {
+            mpq_writer_set_error(writer,
+                                 "mpqfs_writer_close: failed to write "
+                                 "block table");
+            free(hash_table);
+            free(block_table);
+            success = false;
+            goto cleanup;
+        }
+        free(block_table);
+
+        /* Write the hash table. */
+        if (mpq_raw_write(fp, hash_table, table_entry_bytes) != 0) {
+            mpq_writer_set_error(writer,
+                                 "mpqfs_writer_close: failed to write hash table");
+            free(hash_table);
+            success = false;
+            goto cleanup;
+        }
+        free(hash_table);
+
+        /* Write compressed file data. */
+        for (uint32_t i = 0; i < writer->file_count; i++) {
+            if (compressed[i].total_size > 0) {
+                if (mpq_raw_write(fp, compressed[i].data,
+                                  compressed[i].total_size) != 0) {
+                    mpq_writer_set_error(writer,
+                                         "mpqfs_writer_close: failed to write "
+                                         "file data for '%s'",
+                                         writer->files[i].filename);
+                    success = false;
+                    goto cleanup;
+                }
+            }
+        }
+
+        fflush(fp);
+    }
 
 cleanup:
+    /* Free compressed file data. */
+    if (compressed) {
+        for (uint32_t i = 0; i < writer->file_count; i++)
+            free(compressed[i].data);
+        free(compressed);
+    }
+
     /* Free all file entries. */
     for (uint32_t i = 0; i < writer->file_count; i++) {
         free(writer->files[i].filename);
@@ -582,7 +751,7 @@ cleanup:
 }
 
 /* -----------------------------------------------------------------------
- * Public API: discard (close without writing)
+ * Public API: discard a writer without writing
  * ----------------------------------------------------------------------- */
 
 void mpqfs_writer_discard(mpqfs_writer_t *writer)

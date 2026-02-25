@@ -1108,6 +1108,287 @@ static void test_writer_hash_table_sizing(void)
 }
 
 /* -----------------------------------------------------------------------
+ * Test: writer compresses files with PKWARE implode and reads them back
+ *
+ * Verifies that:
+ *   - Compressible data gets IMPLODE flag and smaller on-disk size
+ *   - Incompressible data is stored raw (no IMPLODE flag)
+ *   - Round-trip read produces identical content in both cases
+ * ----------------------------------------------------------------------- */
+
+static void test_writer_compression(void)
+{
+    TEST_BEGIN("writer_compression");
+
+    const char *tmp_path = "/tmp/mpqfs_test_writer_compress.sv";
+
+    /* Build compressible data: repeating pattern. */
+    uint8_t compressible[8192];
+    for (size_t i = 0; i < sizeof(compressible); i++)
+        compressible[i] = (uint8_t)("ABCDEFGH"[i % 8]);
+
+    /* Build incompressible data: pseudo-random bytes. */
+    uint8_t incompressible[512];
+    {
+        uint32_t rng = 0xDEADBEEF;
+        for (size_t i = 0; i < sizeof(incompressible); i++) {
+            rng = rng * 1103515245 + 12345;
+            incompressible[i] = (uint8_t)(rng >> 16);
+        }
+    }
+
+    /* Write archive with both files. */
+    mpqfs_writer_t *writer = mpqfs_writer_create(tmp_path, 2048);
+    ASSERT_NOT_NULL(writer);
+
+    bool ok = mpqfs_writer_add_file(writer, "compressible",
+                                    compressible, sizeof(compressible));
+    ASSERT_TRUE(ok);
+
+    ok = mpqfs_writer_add_file(writer, "incompressible",
+                               incompressible, sizeof(incompressible));
+    ASSERT_TRUE(ok);
+
+    ok = mpqfs_writer_close(writer);
+    ASSERT_TRUE(ok);
+
+    /* Read back and verify. */
+    mpqfs_archive_t *archive = mpqfs_open(tmp_path);
+    if (!archive) {
+        printf("    (mpqfs_open failed: %s)\n", mpqfs_last_error());
+    }
+    ASSERT_NOT_NULL(archive);
+
+    /* Compressible file: should have IMPLODE flag and smaller compressed size. */
+    ASSERT_TRUE(mpqfs_has_file(archive, "compressible"));
+    ASSERT_EQ_SZ(mpqfs_file_size(archive, "compressible"), sizeof(compressible));
+
+    {
+        uint32_t bi = mpq_lookup_file(archive, "compressible");
+        ASSERT_TRUE(bi != UINT32_MAX);
+        const mpq_block_entry_t *blk = &archive->block_table[bi];
+        ASSERT_TRUE((blk->flags & MPQ_FILE_IMPLODE) != 0);
+        ASSERT_TRUE(blk->compressed_size < blk->file_size);
+    }
+
+    size_t read_size = 0;
+    void *data = mpqfs_read_file(archive, "compressible", &read_size);
+    ASSERT_NOT_NULL(data);
+    ASSERT_EQ_SZ(read_size, sizeof(compressible));
+    ASSERT_TRUE(memcmp(data, compressible, sizeof(compressible)) == 0);
+    free(data);
+
+    /* Incompressible file: should be stored without IMPLODE flag. */
+    ASSERT_TRUE(mpqfs_has_file(archive, "incompressible"));
+    ASSERT_EQ_SZ(mpqfs_file_size(archive, "incompressible"), sizeof(incompressible));
+
+    {
+        uint32_t bi = mpq_lookup_file(archive, "incompressible");
+        ASSERT_TRUE(bi != UINT32_MAX);
+        const mpq_block_entry_t *blk = &archive->block_table[bi];
+        /* Incompressible data should NOT have IMPLODE flag. */
+        ASSERT_TRUE((blk->flags & MPQ_FILE_IMPLODE) == 0);
+        ASSERT_EQ_U32(blk->compressed_size, blk->file_size);
+    }
+
+    data = mpqfs_read_file(archive, "incompressible", &read_size);
+    ASSERT_NOT_NULL(data);
+    ASSERT_EQ_SZ(read_size, sizeof(incompressible));
+    ASSERT_TRUE(memcmp(data, incompressible, sizeof(incompressible)) == 0);
+    free(data);
+
+    mpqfs_close(archive);
+    remove(tmp_path);
+
+    TEST_END();
+}
+
+/* -----------------------------------------------------------------------
+ * Test: read a real DevilutionX save file (share_0.sv)
+ *
+ * This is a regression test for the PKWARE explode fix.  share_0.sv is
+ * a real save file produced by DevilutionX with PKWARE implode compressed
+ * files.  We verify that the reader can open it and extract all three
+ * files it contains: hero (1288 bytes), heroitems (20296 bytes), and
+ * hotkeys (136 bytes).
+ * ----------------------------------------------------------------------- */
+
+static void test_read_share_save(void)
+{
+    TEST_BEGIN("read_share_save");
+
+    /* Try to open share_0.sv from the project root.  If the file doesn't
+     * exist (e.g. in CI), skip the test gracefully. */
+    mpqfs_archive_t *archive = mpqfs_open("share_0.sv");
+    if (!archive) {
+        /* Not a failure — the test fixture may not be present. */
+        printf("    (skipped: share_0.sv not found)\n");
+        g_tests_passed++;
+        return;
+    }
+
+    /* Verify header shape matches DevilutionX format. */
+    ASSERT_EQ_U32(archive->header.hash_table_count, 2048);
+    ASSERT_EQ_U32(archive->header.block_table_count, 2048);
+
+    /* ---- hero: 1288 bytes, IMPLODE compressed ---- */
+    ASSERT_TRUE(mpqfs_has_file(archive, "hero"));
+    ASSERT_EQ_SZ(mpqfs_file_size(archive, "hero"), 1288);
+
+    {
+        uint32_t bi = mpq_lookup_file(archive, "hero");
+        ASSERT_TRUE(bi != UINT32_MAX);
+        ASSERT_TRUE((archive->block_table[bi].flags & MPQ_FILE_IMPLODE) != 0);
+    }
+
+    size_t read_size = 0;
+    void *data = mpqfs_read_file(archive, "hero", &read_size);
+    ASSERT_NOT_NULL(data);
+    ASSERT_EQ_SZ(read_size, 1288);
+    free(data);
+
+    /* ---- heroitems: 20296 bytes, IMPLODE compressed ---- */
+    ASSERT_TRUE(mpqfs_has_file(archive, "heroitems"));
+    ASSERT_EQ_SZ(mpqfs_file_size(archive, "heroitems"), 20296);
+
+    data = mpqfs_read_file(archive, "heroitems", &read_size);
+    ASSERT_NOT_NULL(data);
+    ASSERT_EQ_SZ(read_size, 20296);
+    free(data);
+
+    /* ---- hotkeys: 136 bytes, IMPLODE compressed ---- */
+    ASSERT_TRUE(mpqfs_has_file(archive, "hotkeys"));
+    ASSERT_EQ_SZ(mpqfs_file_size(archive, "hotkeys"), 136);
+
+    data = mpqfs_read_file(archive, "hotkeys", &read_size);
+    ASSERT_NOT_NULL(data);
+    ASSERT_EQ_SZ(read_size, 136);
+    free(data);
+
+    /* Non-existent file should not be found. */
+    ASSERT_TRUE(!mpqfs_has_file(archive, "nonexistent"));
+
+    mpqfs_close(archive);
+
+    TEST_END();
+}
+
+/* -----------------------------------------------------------------------
+ * Test: writer produces DevilutionX-compatible save file layout
+ *
+ * DevilutionX expects:
+ *   [Header 32B] [Block table] [Hash table] [File data...]
+ *   - block_table_count == hash_table_count (both = hash_table_size)
+ *   - Block table at offset 0x20 (right after header)
+ *   - Hash table at offset 0x20 + hash_table_size * 16
+ *   - Unused block table entries are zeroed
+ * ----------------------------------------------------------------------- */
+
+static void test_writer_save_file_layout(void)
+{
+    TEST_BEGIN("writer_save_file_layout");
+
+    const char *tmp_path = "/tmp/mpqfs_test_writer_savefile.sv";
+
+    /* Use 2048 entries like DevilutionX does for Diablo 1 saves. */
+    uint32_t hash_table_size = 2048;
+    uint32_t table_entry_bytes = hash_table_size * 16;
+
+    /* Typical Diablo 1 save file names. */
+    const char *names[]  = { "hero", "game", "levels\\l1data\\town.dun" };
+    const char *datas[]  = { "HeroSaveData1234", "GameStateData!!!", "DungeonMapBinary" };
+    size_t      sizes[]  = { 16, 16, 16 };
+    int         nfiles   = 3;
+
+    /* Create archive. */
+    mpqfs_writer_t *writer = mpqfs_writer_create(tmp_path, hash_table_size);
+    ASSERT_NOT_NULL(writer);
+
+    for (int i = 0; i < nfiles; i++) {
+        bool ok = mpqfs_writer_add_file(writer, names[i], datas[i], sizes[i]);
+        ASSERT_TRUE(ok);
+    }
+
+    bool ok = mpqfs_writer_close(writer);
+    ASSERT_TRUE(ok);
+
+    /* ---- Verify the on-disk layout matches DevilutionX ---- */
+
+    /* Read back raw header to check offsets. */
+    FILE *fp = fopen(tmp_path, "rb");
+    ASSERT_NOT_NULL(fp);
+
+    uint8_t hdr[32];
+    ASSERT_TRUE(fread(hdr, 1, 32, fp) == 32);
+
+    uint32_t header_size       = mpqfs_read_le32(hdr + 4);
+    uint32_t archive_size      = mpqfs_read_le32(hdr + 8);
+    uint32_t hash_table_offset = mpqfs_read_le32(hdr + 16);
+    uint32_t block_table_offset = mpqfs_read_le32(hdr + 20);
+    uint32_t hash_table_count  = mpqfs_read_le32(hdr + 24);
+    uint32_t block_table_count = mpqfs_read_le32(hdr + 28);
+
+    /* Block table must be right after the header. */
+    ASSERT_EQ_U32(block_table_offset, header_size);
+    ASSERT_EQ_U32(block_table_offset, 32);
+
+    /* Hash table must follow the block table. */
+    ASSERT_EQ_U32(hash_table_offset, block_table_offset + table_entry_bytes);
+
+    /* Both table counts must equal hash_table_size. */
+    ASSERT_EQ_U32(hash_table_count, hash_table_size);
+    ASSERT_EQ_U32(block_table_count, hash_table_size);
+
+    /* File data starts after both tables. */
+    uint32_t data_start = hash_table_offset + table_entry_bytes;
+
+    /* Archive size should be data_start + total file data. */
+    uint32_t total_data = 0;
+    for (int i = 0; i < nfiles; i++)
+        total_data += (uint32_t)sizes[i];
+    ASSERT_EQ_U32(archive_size, data_start + total_data);
+
+    fclose(fp);
+
+    /* ---- Verify round-trip: read all files back ---- */
+
+    mpqfs_archive_t *archive = mpqfs_open(tmp_path);
+    if (!archive) {
+        printf("    (mpqfs_open failed: %s)\n", mpqfs_last_error());
+    }
+    ASSERT_NOT_NULL(archive);
+
+    /* Confirm the parsed header matches. */
+    ASSERT_EQ_U32(archive->header.hash_table_count, hash_table_size);
+    ASSERT_EQ_U32(archive->header.block_table_count, hash_table_size);
+    ASSERT_EQ_U32(archive->header.block_table_offset, 32);
+
+    for (int i = 0; i < nfiles; i++) {
+        ASSERT_TRUE(mpqfs_has_file(archive, names[i]));
+        ASSERT_EQ_SZ(mpqfs_file_size(archive, names[i]), sizes[i]);
+
+        size_t read_size = 0;
+        void *data = mpqfs_read_file(archive, names[i], &read_size);
+        ASSERT_NOT_NULL(data);
+        ASSERT_EQ_SZ(read_size, sizes[i]);
+        ASSERT_TRUE(memcmp(data, datas[i], sizes[i]) == 0);
+        free(data);
+    }
+
+    /* Verify unused block table entries don't interfere. */
+    ASSERT_TRUE(!mpqfs_has_file(archive, "nonexistent"));
+
+    /* Case-insensitive and slash normalisation on save filenames. */
+    ASSERT_TRUE(mpqfs_has_file(archive, "HERO"));
+    ASSERT_TRUE(mpqfs_has_file(archive, "levels/l1data/town.dun"));
+
+    mpqfs_close(archive);
+    remove(tmp_path);
+
+    TEST_END();
+}
+
+/* -----------------------------------------------------------------------
  * Interactive mode: open a real MPQ and optionally extract a file
  * ----------------------------------------------------------------------- */
 
@@ -1266,6 +1547,9 @@ int main(int argc, char *argv[])
     test_writer_read_into();
     test_writer_fp();
     test_writer_hash_table_sizing();
+    test_writer_compression();
+    test_writer_save_file_layout();
+    test_read_share_save();
 
     printf("\n");
     printf("Results: %d/%d passed", g_tests_passed, g_tests_run);

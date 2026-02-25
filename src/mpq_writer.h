@@ -4,18 +4,20 @@
  *
  * Internal header: MPQ v1 writer data structures.
  *
- * The writer creates MPQ v1 archives in the basic style used by the
- * original Diablo 1 for its save-game files:
- *   - No compression (files stored raw)
+ * The writer creates MPQ v1 archives in the style used by DevilutionX
+ * for its save-game files (.sv / .hsv):
+ *   - PKWARE DCL implode compression (sector-based, with offset tables)
+ *   - Falls back to uncompressed when compression doesn't help
  *   - No file-level encryption
  *   - Hash and block tables encrypted with standard MPQ keys
- *   - All files stored contiguously after the header
+ *   - Both tables are hash_table_size entries (block table padded with zeros)
+ *   - Tables placed before file data
  *
  * Layout produced:
- *   [MPQ Header — 32 bytes]
- *   [File data  — concatenated, uncompressed]
- *   [Hash table — encrypted]
- *   [Block table — encrypted]
+ *   [MPQ Header  — 32 bytes]
+ *   [Block table — hash_table_size × 16 bytes, encrypted]
+ *   [Hash table  — hash_table_size × 16 bytes, encrypted]
+ *   [File data   — PKWARE implode compressed, with sector offset tables]
  */
 
 #ifndef MPQFS_MPQ_WRITER_H

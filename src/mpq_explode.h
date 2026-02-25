@@ -346,6 +346,12 @@ static int pkexplode(const uint8_t *src, size_t src_size,
     size_t out_limit = *dst_size;
 
     for (;;) {
+        /* If we've produced all expected output, stop.  Some compressors
+         * (e.g. DevilutionX / StormLib) don't emit an end-of-stream
+         * sentinel when the output exactly fills the expected size. */
+        if (out_pos >= out_limit)
+            break;
+
         /* Read one flag bit: 0 = literal, 1 = match. */
         uint32_t flag = pk_bs_read(&bs, 1);
         if (flag == (uint32_t)-1)

@@ -284,20 +284,22 @@ MPQFS_API SDL_RWops *mpqfs_open_rwops(mpqfs_archive_t *archive,
 /* -----------------------------------------------------------------------
  * Archive writing (Diablo 1 save-game compatible)
  *
- * The writer creates MPQ v1 archives in the basic style used by the
- * original Diablo 1 for its save-game (.sv) files:
+ * The writer creates MPQ v1 archives in the style used by DevilutionX
+ * for its save-game (.sv / .hsv) files:
  *
- *   - No compression (files stored raw / uncompressed)
+ *   - PKWARE DCL implode compression (sector-based, with offset tables)
+ *   - Falls back to uncompressed storage when compression doesn't help
  *   - No file-level encryption
  *   - Hash and block tables encrypted with standard MPQ keys
- *   - All file data stored contiguously after the 32-byte header
+ *   - Both tables are hash_table_size entries (block table padded with zeros)
+ *   - Tables placed immediately after header, before file data
  *
  * Produced layout:
  *
  *   [MPQ Header  — 32 bytes]
- *   [File data   — concatenated, uncompressed]
- *   [Hash table  — encrypted]
- *   [Block table — encrypted]
+ *   [Block table — hash_table_size × 16 bytes, encrypted]
+ *   [Hash table  — hash_table_size × 16 bytes, encrypted]
+ *   [File data   — PKWARE implode compressed, with sector offset tables]
  *
  * Typical usage:
  *
@@ -367,9 +369,11 @@ MPQFS_API mpqfs_writer_t *mpqfs_writer_create_fd(int fd,
  * The writer makes owned copies of both the filename and the data, so
  * the caller may free them immediately after this call returns.
  *
- * Files are stored uncompressed and without encryption, matching the
- * original Diablo 1 save format.  The file will be assigned the
- * MPQ_FILE_EXISTS flag in the block table.
+ * Files are compressed with PKWARE DCL implode (sector-based) and
+ * stored without file-level encryption, matching the DevilutionX save
+ * format.  If compression does not reduce the file size, it is stored
+ * uncompressed.  The block table entry will have the MPQ_FILE_EXISTS
+ * flag, and additionally MPQ_FILE_IMPLODE if any sector compressed.
  *
  * @param writer    Writer handle.
  * @param filename  Archive-relative path (e.g. "hero" or "game\\0.dun").
