@@ -36,7 +36,7 @@ mpqfs is designed for extreme portability. It has been written to compile and ru
 
 - **C99 baseline** — no C11 or C++ features are required to compile the library.
 - **C++ safe** — all headers use `extern "C"` guards. The entire library compiles as C++20 with zero warnings under `-Wall -Wextra -Wpedantic`.
-- **Endian safe** — all on-disk data is parsed via byte-level reads. Big-endian platforms are detected at compile time with byte-swap helpers ready (all current DevilutionX targets are little-endian).
+- **Endian safe** — all on-disk data is parsed via byte-level reads. Big-endian platforms are detected at compile time with byte-swap helpers ready.
 - **No TLS requirement** — `thread_local` / `_Thread_local` / `__thread` is used when available but degrades to a plain `static` on single-threaded platforms.
 - **No POSIX requirement** — `mpqfs_open(path)` uses only `fopen`/`fread`/`fseek`. The `mpqfs_open_fd()` variant is conditionally compiled only on platforms that provide `fdopen()`. A fully portable `mpqfs_open_fp(FILE*)` is always available.
 - **Struct packing** — on-disk struct layouts are verified with compile-time size assertions. Both `#pragma pack` (MSVC) and `__attribute__((packed))` (GCC/Clang) are used.
