@@ -19,6 +19,7 @@
 #include "mpq_archive.h"
 #include "mpq_stream.h"
 #include "mpq_crypto.h"
+#include <mpqfs/mpqfs.h>
 
 #include <stdlib.h>
 #include <string.h>
