@@ -41,8 +41,12 @@ extern "C" {
 /* Compression sub-type IDs (first byte of a compressed sector when
  * MPQ_FILE_COMPRESS is set).  Diablo 1 only uses PKWARE implode via the
  * MPQ_FILE_IMPLODE flag, but we list the byte IDs here for completeness. */
+#define MPQ_COMP_HUFFMAN       0x01U
+#define MPQ_COMP_ZLIB          0x02U
 #define MPQ_COMP_PKWARE        0x08U
 #define MPQ_COMP_BZIP2         0x10U
+#define MPQ_COMP_ADPCM_MONO   0x40U
+#define MPQ_COMP_ADPCM_STEREO 0x80U
 
 /* --------------------------------------------------------------------------
  * On-disk structure definitions

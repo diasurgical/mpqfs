@@ -20,6 +20,8 @@
 #include "mpq_crypto.h"
 #include "mpq_explode.h"
 
+#include <zlib.h>
+
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -148,10 +150,22 @@ static int mpq_stream_load_sector(mpq_stream_t *stream, uint32_t sector_idx)
             }
 
             uint8_t comp_method = comp_buf[0];
+            const uint8_t *src_data = comp_buf + 1;
+            uint32_t       src_len  = comp_size - 1;
 
+            /*
+             * MPQ multi-compression can layer multiple methods.
+             * They are applied in a fixed order during compression;
+             * we undo them in reverse order.  In practice Diablo 1
+             * spawn.mpq only uses a single method per sector.
+             *
+             * We handle them from innermost (applied last during
+             * compression = undone first) to outermost.
+             */
+
+            /* --- PKWARE DCL (0x08) --- */
             if (comp_method & MPQ_COMP_PKWARE) {
-                /* PKWARE DCL in multi-compression mode */
-                rc = pk_explode_sector(comp_buf + 1, comp_size - 1,
+                rc = pk_explode_sector(src_data, src_len,
                                        stream->sector_buf, expect);
                 if (rc != PK_OK) {
                     free(comp_buf);
@@ -160,8 +174,27 @@ static int mpq_stream_load_sector(mpq_stream_t *stream, uint32_t sector_idx)
                                   sector_idx, rc);
                     return -1;
                 }
-            } else {
-                /* Unsupported compression method. */
+                /* Output is now in sector_buf; if another method needs
+                 * to run after this, it would read from sector_buf.
+                 * For single-method (common case), we're done. */
+            }
+
+            /* --- zlib / deflate (0x02) --- */
+            if (comp_method & MPQ_COMP_ZLIB) {
+                uLongf dest_len = (uLongf)expect;
+                int zrc = uncompress(stream->sector_buf, &dest_len,
+                                     src_data, (uLong)src_len);
+                if (zrc != Z_OK) {
+                    free(comp_buf);
+                    mpq_set_error(archive, "mpq_stream: zlib uncompress "
+                                  "failed on sector %u (zrc=%d)",
+                                  sector_idx, zrc);
+                    return -1;
+                }
+            }
+
+            /* --- Unsupported methods --- */
+            if (comp_method & ~(MPQ_COMP_PKWARE | MPQ_COMP_ZLIB)) {
                 free(comp_buf);
                 mpq_set_error(archive, "mpq_stream: unsupported compression "
                               "method 0x%02X on sector %u",

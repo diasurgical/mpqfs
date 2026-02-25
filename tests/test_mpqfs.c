@@ -1111,9 +1111,22 @@ static void test_writer_hash_table_sizing(void)
  * Interactive mode: open a real MPQ and optionally extract a file
  * ----------------------------------------------------------------------- */
 
+static const char *flags_to_str(uint32_t flags, char *buf, size_t buf_size)
+{
+    buf[0] = '\0';
+    if (flags & MPQ_FILE_IMPLODE)      strncat(buf, "IMPLODE ",      buf_size - strlen(buf) - 1);
+    if (flags & MPQ_FILE_COMPRESS)     strncat(buf, "COMPRESS ",     buf_size - strlen(buf) - 1);
+    if (flags & MPQ_FILE_ENCRYPTED)    strncat(buf, "ENCRYPTED ",    buf_size - strlen(buf) - 1);
+    if (flags & MPQ_FILE_FIX_KEY)      strncat(buf, "FIX_KEY ",      buf_size - strlen(buf) - 1);
+    if (flags & MPQ_FILE_SINGLE_UNIT)  strncat(buf, "SINGLE_UNIT ",  buf_size - strlen(buf) - 1);
+    if (flags & MPQ_FILE_EXISTS)       strncat(buf, "EXISTS ",       buf_size - strlen(buf) - 1);
+    if (buf[0] == '\0')                strncat(buf, "(none)",        buf_size - strlen(buf) - 1);
+    return buf;
+}
+
 static int interactive_mode(const char *mpq_path, const char *filename)
 {
-    printf("Opening: %s\n", mpq_path);
+    fprintf(stderr, "Opening: %s\n", mpq_path);
 
     mpqfs_archive_t *archive = mpqfs_open(mpq_path);
     if (!archive) {
@@ -1121,10 +1134,23 @@ static int interactive_mode(const char *mpq_path, const char *filename)
         return 1;
     }
 
-    printf("Archive opened successfully.\n");
+    fprintf(stderr, "Archive opened successfully.\n");
+
+    /* Always dump header info. */
+    fprintf(stderr, "\n--- MPQ Header ---\n");
+    fprintf(stderr, "  Archive offset:    0x%08llX\n", (unsigned long long)archive->archive_offset);
+    fprintf(stderr, "  Header size:       %u\n",  archive->header.header_size);
+    fprintf(stderr, "  Archive size:      %u\n",  archive->header.archive_size);
+    fprintf(stderr, "  Format version:    %u\n",  (unsigned)archive->header.format_version);
+    fprintf(stderr, "  Sector size shift: %u (sector size = %u)\n",
+           (unsigned)archive->header.sector_size_shift, archive->sector_size);
+    fprintf(stderr, "  Hash table offset: 0x%08X (%u entries)\n",
+           archive->header.hash_table_offset, archive->header.hash_table_count);
+    fprintf(stderr, "  Block table offset:0x%08X (%u entries)\n",
+           archive->header.block_table_offset, archive->header.block_table_count);
 
     if (filename) {
-        printf("Looking up: %s\n", filename);
+        fprintf(stderr, "\nLooking up: %s\n", filename);
 
         if (!mpqfs_has_file(archive, filename)) {
             fprintf(stderr, "File not found in archive: %s\n", filename);
@@ -1133,7 +1159,20 @@ static int interactive_mode(const char *mpq_path, const char *filename)
         }
 
         size_t fsize = mpqfs_file_size(archive, filename);
-        printf("File size: %zu bytes\n", fsize);
+        fprintf(stderr, "File size: %zu bytes\n", fsize);
+
+        /* Also show the block entry details for this file. */
+        uint32_t bi = mpq_lookup_file(archive, filename);
+        if (bi != UINT32_MAX) {
+            const mpq_block_entry_t *blk = &archive->block_table[bi];
+            char fbuf[256];
+            fprintf(stderr, "  Block index:       %u\n", bi);
+            fprintf(stderr, "  Offset:            0x%08X\n", blk->offset);
+            fprintf(stderr, "  Compressed size:   %u\n", blk->compressed_size);
+            fprintf(stderr, "  Uncompressed size: %u\n", blk->file_size);
+            fprintf(stderr, "  Flags:             0x%08X  %s\n", blk->flags,
+                   flags_to_str(blk->flags, fbuf, sizeof(fbuf)));
+        }
 
         size_t read_size = 0;
         void *data = mpqfs_read_file(archive, filename, &read_size);
@@ -1143,12 +1182,45 @@ static int interactive_mode(const char *mpq_path, const char *filename)
             return 1;
         }
 
-        printf("Read %zu bytes. Writing to stdout...\n", read_size);
+        fprintf(stderr, "Read %zu bytes. Writing to stdout...\n", read_size);
         fwrite(data, 1, read_size, stdout);
         free(data);
     } else {
-        printf("No filename specified. Use: %s <archive.mpq> <filename> to extract.\n",
-               "mpqfs_test");
+        /* Dump block table. */
+        fprintf(stderr, "\n--- Block Table (%u entries) ---\n", archive->header.block_table_count);
+        fprintf(stderr, "  %-6s  %-10s  %-10s  %-10s  %-10s  %s\n",
+               "Index", "Offset", "CmpSize", "FileSize", "Flags", "Description");
+        for (uint32_t i = 0; i < archive->header.block_table_count; i++) {
+            const mpq_block_entry_t *blk = &archive->block_table[i];
+            char fbuf[256];
+            fprintf(stderr, "  %-6u  0x%08X  %-10u  %-10u  0x%08X  %s\n",
+                   i, blk->offset, blk->compressed_size, blk->file_size,
+                   blk->flags, flags_to_str(blk->flags, fbuf, sizeof(fbuf)));
+        }
+
+        /* Dump hash table — show non-empty entries. */
+        fprintf(stderr, "\n--- Hash Table (%u entries, non-empty shown) ---\n",
+               archive->header.hash_table_count);
+        fprintf(stderr, "  %-6s  %-10s  %-10s  %-6s  %-5s  %-10s\n",
+               "Slot", "HashA", "HashB", "Locale", "Plat", "BlockIdx");
+        uint32_t occupied = 0;
+        for (uint32_t i = 0; i < archive->header.hash_table_count; i++) {
+            const mpq_hash_entry_t *h = &archive->hash_table[i];
+            if (h->block_index == MPQ_HASH_ENTRY_EMPTY)
+                continue;
+            if (h->block_index == MPQ_HASH_ENTRY_DELETED) {
+                fprintf(stderr, "  %-6u  (deleted)\n", i);
+                occupied++;
+                continue;
+            }
+            fprintf(stderr, "  %-6u  0x%08X  0x%08X  %-6u  %-5u  %u\n",
+                   i, h->hash_a, h->hash_b, (unsigned)h->locale,
+                   (unsigned)h->platform, h->block_index);
+            occupied++;
+        }
+        fprintf(stderr, "  (%u/%u slots occupied)\n", occupied, archive->header.hash_table_count);
+
+        fprintf(stderr, "\nUse: mpqfs_test <archive> <filename> to extract a file.\n");
     }
 
     mpqfs_close(archive);
