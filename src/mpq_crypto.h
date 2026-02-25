@@ -33,6 +33,7 @@ void mpq_crypto_init(void);
 #define MPQ_HASH_NAME_A       0x100   /* verification hash A       */
 #define MPQ_HASH_NAME_B       0x200   /* verification hash B       */
 #define MPQ_HASH_FILE_KEY     0x300   /* file decryption key       */
+#define MPQ_HASH_KEY2_MIX    0x400   /* encrypt/decrypt key2 mix  */
 
 /*
  * Compute an MPQ hash for the given NUL-terminated string.

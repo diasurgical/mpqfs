@@ -72,7 +72,8 @@ typedef struct mpq_hash_entry {
     uint32_t hash_a;             /* First name hash                            */
     uint32_t hash_b;             /* Second name hash                           */
     uint16_t locale;             /* File language (0 = neutral)                */
-    uint16_t platform;           /* Platform (0 = default)                     */
+    uint8_t  platform;           /* Platform (0 = default)                     */
+    uint8_t  flags;              /* Entry flags (0 in practice)                */
     uint32_t block_index;        /* Index into the block table, or sentinel    */
 } MPQFS_PACKED mpq_hash_entry_t;
 
