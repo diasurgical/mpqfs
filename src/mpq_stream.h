@@ -11,7 +11,10 @@
 #include "mpq_archive.h"
 #include <stdint.h>
 #include <stddef.h>
-#include <stdbool.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /*
  * An mpq_stream_t represents an open handle to a single file within an MPQ
@@ -101,5 +104,9 @@ int64_t mpq_stream_tell(mpq_stream_t *stream);
  * Return the total uncompressed size of the file.
  */
 size_t mpq_stream_size(mpq_stream_t *stream);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* MPQFS_MPQ_STREAM_H */

@@ -8,8 +8,10 @@
 #ifndef MPQFS_MPQ_ARCHIVE_H
 #define MPQFS_MPQ_ARCHIVE_H
 
+#include "mpq_platform.h"
+
 #include <stdint.h>
-#include <stdbool.h>
+#include <stddef.h>
 #include <stdio.h>
 
 #ifdef __cplusplus
@@ -42,7 +44,17 @@ extern "C" {
 #define MPQ_COMP_PKWARE        0x08U
 #define MPQ_COMP_BZIP2         0x10U
 
-#pragma pack(push, 1)
+/* --------------------------------------------------------------------------
+ * On-disk structure definitions
+ *
+ * These structs are packed to match the binary layout on disk.  The header
+ * is parsed field-by-field from a raw byte buffer (via mpqfs_read_le*),
+ * but the hash and block tables are decrypted in-place as uint32_t arrays
+ * and then accessed through these structs, so their layout MUST match the
+ * on-disk format exactly.
+ * -------------------------------------------------------------------------- */
+
+MPQFS_PACK_BEGIN
 
 typedef struct mpq_header {
     uint32_t signature;          /* MPQ_SIGNATURE                              */
@@ -54,7 +66,7 @@ typedef struct mpq_header {
     uint32_t block_table_offset; /* Offset of block table relative to archive  */
     uint32_t hash_table_count;   /* Number of entries in the hash table        */
     uint32_t block_table_count;  /* Number of entries in the block table       */
-} mpq_header_t;
+} MPQFS_PACKED mpq_header_t;
 
 typedef struct mpq_hash_entry {
     uint32_t hash_a;             /* First name hash                            */
@@ -62,16 +74,23 @@ typedef struct mpq_hash_entry {
     uint16_t locale;             /* File language (0 = neutral)                */
     uint16_t platform;           /* Platform (0 = default)                     */
     uint32_t block_index;        /* Index into the block table, or sentinel    */
-} mpq_hash_entry_t;
+} MPQFS_PACKED mpq_hash_entry_t;
 
 typedef struct mpq_block_entry {
     uint32_t offset;             /* Offset of file data, relative to archive   */
     uint32_t compressed_size;    /* Compressed size (on disk)                   */
     uint32_t file_size;          /* Uncompressed size                          */
     uint32_t flags;              /* MPQ_FILE_* flags                           */
-} mpq_block_entry_t;
+} MPQFS_PACKED mpq_block_entry_t;
 
-#pragma pack(pop)
+MPQFS_PACK_END
+
+/* Compile-time layout verification — if any of these fire, the struct
+ * packing is wrong for this compiler/platform and the table decryption
+ * will produce garbage. */
+MPQFS_STATIC_ASSERT(sizeof(mpq_header_t)      == 32, "mpq_header_t must be 32 bytes");
+MPQFS_STATIC_ASSERT(sizeof(mpq_hash_entry_t)  == 16, "mpq_hash_entry_t must be 16 bytes");
+MPQFS_STATIC_ASSERT(sizeof(mpq_block_entry_t) == 16, "mpq_block_entry_t must be 16 bytes");
 
 /* --------------------------------------------------------------------------
  * Runtime archive state
@@ -104,7 +123,8 @@ uint32_t mpq_lookup_file(const mpqfs_archive_t *archive, const char *filename);
 /*
  * Set the archive's error string (printf-style).
  */
-void mpq_set_error(mpqfs_archive_t *archive, const char *fmt, ...);
+void mpq_set_error(mpqfs_archive_t *archive, const char *fmt, ...)
+    MPQFS_PRINTF_ATTR(2, 3);
 
 #ifdef __cplusplus
 }

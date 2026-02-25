@@ -5,6 +5,13 @@
  * Archive lifecycle: open, close, file lookup, and whole-file reads.
  */
 
+/* Feature-test macro: must appear before any system headers so that
+ * fdopen() and friends are declared in strict C99 mode on POSIX hosts. */
+#if !defined(_POSIX_C_SOURCE) && !defined(_WIN32) && !defined(__DJGPP__)
+#  define _POSIX_C_SOURCE 200112L
+#endif
+
+#include "mpq_platform.h"
 #include "mpq_archive.h"
 #include "mpq_crypto.h"
 #include "mpq_stream.h"
@@ -14,8 +21,10 @@
 #include <stdarg.h>
 #include <errno.h>
 
-/* Thread-local last-error for the public API (used when no archive context). */
-static _Thread_local char g_last_error[256] = {0};
+/* Thread-local last-error for the public API (used when no archive context).
+ * On single-threaded platforms (DOS, PS2, ...) MPQFS_THREAD_LOCAL expands to
+ * nothing, giving a plain process-global — which is correct. */
+static MPQFS_THREAD_LOCAL char g_last_error[256] = {0};
 
 /* -----------------------------------------------------------------------
  * Error helpers
@@ -43,25 +52,6 @@ const char *mpqfs_last_error(void)
 }
 
 /* -----------------------------------------------------------------------
- * Little-endian helpers (for portability)
- * ----------------------------------------------------------------------- */
-
-static uint16_t read_le16(const void *p)
-{
-    const uint8_t *b = (const uint8_t *)p;
-    return (uint16_t)((uint16_t)b[0] | ((uint16_t)b[1] << 8));
-}
-
-static uint32_t read_le32(const void *p)
-{
-    const uint8_t *b = (const uint8_t *)p;
-    return (uint32_t)b[0]
-         | ((uint32_t)b[1] << 8)
-         | ((uint32_t)b[2] << 16)
-         | ((uint32_t)b[3] << 24);
-}
-
-/* -----------------------------------------------------------------------
  * Header parsing
  * ----------------------------------------------------------------------- */
 
@@ -80,7 +70,7 @@ static int mpq_find_header(FILE *fp, int64_t *out_offset)
             return -1;
         if (fread(buf, 1, 4, fp) != 4)
             return -1;
-        if (read_le32(buf) == MPQ_SIGNATURE) {
+        if (mpqfs_read_le32(buf) == MPQ_SIGNATURE) {
             *out_offset = off;
             return 0;
         }
@@ -99,15 +89,15 @@ static int mpq_read_header(FILE *fp, int64_t archive_offset,
     if (fread(raw, 1, MPQ_HEADER_SIZE_V1, fp) != MPQ_HEADER_SIZE_V1)
         return -1;
 
-    hdr->signature          = read_le32(raw +  0);
-    hdr->header_size        = read_le32(raw +  4);
-    hdr->archive_size       = read_le32(raw +  8);
-    hdr->format_version     = read_le16(raw + 12);
-    hdr->sector_size_shift  = read_le16(raw + 14);
-    hdr->hash_table_offset  = read_le32(raw + 16);
-    hdr->block_table_offset = read_le32(raw + 20);
-    hdr->hash_table_count   = read_le32(raw + 24);
-    hdr->block_table_count  = read_le32(raw + 28);
+    hdr->signature          = mpqfs_read_le32(raw +  0);
+    hdr->header_size        = mpqfs_read_le32(raw +  4);
+    hdr->archive_size       = mpqfs_read_le32(raw +  8);
+    hdr->format_version     = mpqfs_read_le16(raw + 12);
+    hdr->sector_size_shift  = mpqfs_read_le16(raw + 14);
+    hdr->hash_table_offset  = mpqfs_read_le32(raw + 16);
+    hdr->block_table_offset = mpqfs_read_le32(raw + 20);
+    hdr->hash_table_count   = mpqfs_read_le32(raw + 24);
+    hdr->block_table_count  = mpqfs_read_le32(raw + 28);
 
     if (hdr->signature != MPQ_SIGNATURE)
         return -1;
@@ -117,7 +107,31 @@ static int mpq_read_header(FILE *fp, int64_t archive_offset,
 
 /* -----------------------------------------------------------------------
  * Table loading
+ *
+ * Hash and block tables are stored as arrays of little-endian uint32_t
+ * values and encrypted with a known key.  The load sequence is:
+ *
+ *   1. Read raw bytes from disk.
+ *   2. On big-endian hosts, byte-swap each uint32_t so the decryption
+ *      algorithm (which operates on native uint32_t) sees the correct
+ *      values.
+ *   3. Decrypt the uint32_t array in-place.
+ *   4. On big-endian hosts, byte-swap each uint32_t back so the struct
+ *      fields are in the correct native byte order.
+ *
+ * On little-endian hosts steps 2 and 4 are identity operations.
  * ----------------------------------------------------------------------- */
+
+static void mpq_fixup_le32_array(uint32_t *data, size_t count)
+{
+#if MPQFS_BIG_ENDIAN
+    for (size_t i = 0; i < count; i++)
+        data[i] = mpqfs_le32(data[i]);
+#else
+    MPQFS_UNUSED(data);
+    MPQFS_UNUSED(count);
+#endif
+}
 
 static mpq_hash_entry_t *mpq_load_hash_table(FILE *fp,
                                               int64_t archive_offset,
@@ -140,16 +154,17 @@ static mpq_hash_entry_t *mpq_load_hash_table(FILE *fp,
         return NULL;
     }
 
-    /* Decrypt in-place.  The table is encrypted as an array of uint32_t
-     * values, so the count is 4× the number of hash entries (each entry
-     * is 16 bytes = 4 dwords). */
-    uint32_t key = mpq_hash_string("(hash table)", MPQ_HASH_FILE_KEY);
-    mpq_decrypt_block((uint32_t *)table, count * 4, key);
+    /* Byte-swap from LE on disk to native for decryption. */
+    uint32_t dword_count = count * 4; /* 16 bytes per entry = 4 dwords */
+    mpq_fixup_le32_array((uint32_t *)table, dword_count);
 
-    /* Fix up endianness — after decryption the dwords are native-endian
-     * on a little-endian host, which is the common case.  For big-endian
-     * hosts we would need to byte-swap each field here.  For now we
-     * assume LE (matches every platform Diablo 1 targets). */
+    /* Decrypt in-place. */
+    uint32_t key = mpq_hash_string("(hash table)", MPQ_HASH_FILE_KEY);
+    mpq_decrypt_block((uint32_t *)table, dword_count, key);
+
+    /* On BE, the decrypted values are now in native order — which is
+     * what we want for direct struct field access.  On LE they were
+     * already native.  No further swap needed. */
 
     return table;
 }
@@ -175,8 +190,11 @@ static mpq_block_entry_t *mpq_load_block_table(FILE *fp,
         return NULL;
     }
 
+    uint32_t dword_count = count * 4;
+    mpq_fixup_le32_array((uint32_t *)table, dword_count);
+
     uint32_t key = mpq_hash_string("(block table)", MPQ_HASH_FILE_KEY);
-    mpq_decrypt_block((uint32_t *)table, count * 4, key);
+    mpq_decrypt_block((uint32_t *)table, dword_count, key);
 
     return table;
 }
@@ -228,6 +246,73 @@ uint32_t mpq_lookup_file(const mpqfs_archive_t *archive, const char *filename)
 }
 
 /* -----------------------------------------------------------------------
+ * Internal: shared archive init after the FILE* is obtained
+ * ----------------------------------------------------------------------- */
+
+static mpqfs_archive_t *mpq_init_archive(FILE *fp, int owns_fd,
+                                         const char *source_name)
+{
+    mpqfs_archive_t *archive = (mpqfs_archive_t *)calloc(1, sizeof(*archive));
+    if (!archive) {
+        fclose(fp);
+        mpq_set_error(NULL, "%s: out of memory", source_name);
+        return NULL;
+    }
+
+    archive->fp      = fp;
+    archive->owns_fd = owns_fd;
+
+    /* Locate the MPQ header. */
+    if (mpq_find_header(fp, &archive->archive_offset) != 0) {
+        mpq_set_error(archive, "%s: MPQ signature not found", source_name);
+        fclose(fp);
+        free(archive);
+        return NULL;
+    }
+
+    /* Read & validate header. */
+    if (mpq_read_header(fp, archive->archive_offset, &archive->header) != 0) {
+        mpq_set_error(archive, "%s: failed to read MPQ header", source_name);
+        fclose(fp);
+        free(archive);
+        return NULL;
+    }
+
+    if (archive->header.format_version != 0) {
+        mpq_set_error(archive, "%s: unsupported format version %u "
+                      "(only v1 / version 0 is supported)",
+                      source_name, (unsigned)archive->header.format_version);
+        fclose(fp);
+        free(archive);
+        return NULL;
+    }
+
+    archive->sector_size = 512u << archive->header.sector_size_shift;
+
+    /* Load tables. */
+    archive->hash_table = mpq_load_hash_table(fp, archive->archive_offset,
+                                              &archive->header);
+    if (!archive->hash_table) {
+        mpq_set_error(archive, "%s: failed to load hash table", source_name);
+        fclose(fp);
+        free(archive);
+        return NULL;
+    }
+
+    archive->block_table = mpq_load_block_table(fp, archive->archive_offset,
+                                                &archive->header);
+    if (!archive->block_table) {
+        mpq_set_error(archive, "%s: failed to load block table", source_name);
+        free(archive->hash_table);
+        fclose(fp);
+        free(archive);
+        return NULL;
+    }
+
+    return archive;
+}
+
+/* -----------------------------------------------------------------------
  * Public API: open / close
  * ----------------------------------------------------------------------- */
 
@@ -247,65 +332,10 @@ mpqfs_archive_t *mpqfs_open(const char *path)
         return NULL;
     }
 
-    mpqfs_archive_t *archive = (mpqfs_archive_t *)calloc(1, sizeof(*archive));
-    if (!archive) {
-        fclose(fp);
-        mpq_set_error(NULL, "mpqfs_open: out of memory");
-        return NULL;
-    }
-
-    archive->fp      = fp;
-    archive->owns_fd = 1;
-
-    /* Locate the MPQ header. */
-    if (mpq_find_header(fp, &archive->archive_offset) != 0) {
-        mpq_set_error(archive, "mpqfs_open: MPQ signature not found in '%s'", path);
-        fclose(fp);
-        free(archive);
-        return NULL;
-    }
-
-    /* Read & validate header. */
-    if (mpq_read_header(fp, archive->archive_offset, &archive->header) != 0) {
-        mpq_set_error(archive, "mpqfs_open: failed to read MPQ header");
-        fclose(fp);
-        free(archive);
-        return NULL;
-    }
-
-    if (archive->header.format_version != 0) {
-        mpq_set_error(archive, "mpqfs_open: unsupported format version %u "
-                      "(only v1 / version 0 is supported)",
-                      (unsigned)archive->header.format_version);
-        fclose(fp);
-        free(archive);
-        return NULL;
-    }
-
-    archive->sector_size = 512u << archive->header.sector_size_shift;
-
-    /* Load tables. */
-    archive->hash_table = mpq_load_hash_table(fp, archive->archive_offset,
-                                              &archive->header);
-    if (!archive->hash_table) {
-        mpq_set_error(archive, "mpqfs_open: failed to load hash table");
-        fclose(fp);
-        free(archive);
-        return NULL;
-    }
-
-    archive->block_table = mpq_load_block_table(fp, archive->archive_offset,
-                                                &archive->header);
-    if (!archive->block_table) {
-        mpq_set_error(archive, "mpqfs_open: failed to load block table");
-        free(archive->hash_table);
-        fclose(fp);
-        free(archive);
-        return NULL;
-    }
-
-    return archive;
+    return mpq_init_archive(fp, 1, "mpqfs_open");
 }
+
+#if MPQFS_HAS_FDOPEN
 
 mpqfs_archive_t *mpqfs_open_fd(int fd)
 {
@@ -323,60 +353,21 @@ mpqfs_archive_t *mpqfs_open_fd(int fd)
         return NULL;
     }
 
-    mpqfs_archive_t *archive = (mpqfs_archive_t *)calloc(1, sizeof(*archive));
-    if (!archive) {
-        fclose(fp);
-        mpq_set_error(NULL, "mpqfs_open_fd: out of memory");
+    return mpq_init_archive(fp, 1, "mpqfs_open_fd");
+}
+
+#endif /* MPQFS_HAS_FDOPEN */
+
+mpqfs_archive_t *mpqfs_open_fp(FILE *fp)
+{
+    mpq_crypto_init();
+
+    if (!fp) {
+        mpq_set_error(NULL, "mpqfs_open_fp: fp is NULL");
         return NULL;
     }
 
-    archive->fp      = fp;
-    archive->owns_fd = 1; /* fdopen takes ownership */
-
-    if (mpq_find_header(fp, &archive->archive_offset) != 0) {
-        mpq_set_error(archive, "mpqfs_open_fd: MPQ signature not found");
-        fclose(fp);
-        free(archive);
-        return NULL;
-    }
-
-    if (mpq_read_header(fp, archive->archive_offset, &archive->header) != 0) {
-        mpq_set_error(archive, "mpqfs_open_fd: failed to read MPQ header");
-        fclose(fp);
-        free(archive);
-        return NULL;
-    }
-
-    if (archive->header.format_version != 0) {
-        mpq_set_error(archive, "mpqfs_open_fd: unsupported format version %u",
-                      (unsigned)archive->header.format_version);
-        fclose(fp);
-        free(archive);
-        return NULL;
-    }
-
-    archive->sector_size = 512u << archive->header.sector_size_shift;
-
-    archive->hash_table = mpq_load_hash_table(fp, archive->archive_offset,
-                                              &archive->header);
-    if (!archive->hash_table) {
-        mpq_set_error(archive, "mpqfs_open_fd: failed to load hash table");
-        fclose(fp);
-        free(archive);
-        return NULL;
-    }
-
-    archive->block_table = mpq_load_block_table(fp, archive->archive_offset,
-                                                &archive->header);
-    if (!archive->block_table) {
-        mpq_set_error(archive, "mpqfs_open_fd: failed to load block table");
-        free(archive->hash_table);
-        fclose(fp);
-        free(archive);
-        return NULL;
-    }
-
-    return archive;
+    return mpq_init_archive(fp, 0, "mpqfs_open_fp");
 }
 
 void mpqfs_close(mpqfs_archive_t *archive)

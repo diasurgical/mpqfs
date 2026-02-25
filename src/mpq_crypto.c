@@ -6,6 +6,7 @@
  * block encryption/decryption, and file key derivation.
  */
 
+#include "mpq_platform.h"
 #include "mpq_crypto.h"
 
 #include <ctype.h>

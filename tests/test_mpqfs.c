@@ -14,9 +14,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-#include <stdbool.h>
 
 /* Internal headers — we test the internals directly. */
+#include "mpq_platform.h"
 #include "mpq_crypto.h"
 #include "mpq_archive.h"
 #include "mpq_stream.h"

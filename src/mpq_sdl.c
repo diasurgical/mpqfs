@@ -11,6 +11,7 @@
  * MPQFS_SDL_VERSION define (set by CMake).
  */
 
+#include "mpq_platform.h"
 #include "mpq_archive.h"
 #include "mpq_stream.h"
 #include "mpq_crypto.h"
@@ -85,9 +86,9 @@ static size_t SDLCALL mpqfs_sdl3_read(void *userdata, void *ptr, size_t size, SD
 
 static size_t SDLCALL mpqfs_sdl3_write(void *userdata, const void *ptr, size_t size, SDL_IOStatus *status)
 {
-    (void)userdata;
-    (void)ptr;
-    (void)size;
+    MPQFS_UNUSED(userdata);
+    MPQFS_UNUSED(ptr);
+    MPQFS_UNUSED(size);
     /* Read-only stream. */
     if (status) *status = SDL_IO_STATUS_ERROR;
     return 0;
@@ -182,10 +183,10 @@ static size_t SDLCALL mpqfs_sdl2_read(SDL_RWops *ctx, void *ptr,
 static size_t SDLCALL mpqfs_sdl2_write(SDL_RWops *ctx, const void *ptr,
                                         size_t size, size_t num)
 {
-    (void)ctx;
-    (void)ptr;
-    (void)size;
-    (void)num;
+    MPQFS_UNUSED(ctx);
+    MPQFS_UNUSED(ptr);
+    MPQFS_UNUSED(size);
+    MPQFS_UNUSED(num);
     /* Read-only. */
     return 0;
 }
@@ -271,10 +272,10 @@ static int SDLCALL mpqfs_sdl1_read(SDL_RWops *ctx, void *ptr,
 static int SDLCALL mpqfs_sdl1_write(SDL_RWops *ctx, const void *ptr,
                                      int size, int num)
 {
-    (void)ctx;
-    (void)ptr;
-    (void)size;
-    (void)num;
+    MPQFS_UNUSED(ctx);
+    MPQFS_UNUSED(ptr);
+    MPQFS_UNUSED(size);
+    MPQFS_UNUSED(num);
     return -1;
 }
 

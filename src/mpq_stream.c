@@ -15,6 +15,7 @@
  * the caller's buffer.
  */
 
+#include "mpq_platform.h"
 #include "mpq_stream.h"
 #include "mpq_crypto.h"
 #include "mpq_explode.h"
@@ -317,11 +318,7 @@ mpq_stream_t *mpq_stream_open(mpqfs_archive_t *archive, uint32_t block_index)
 
         /* Convert from little-endian to native. */
         for (uint32_t i = 0; i < table_entries; i++) {
-            const uint8_t *b = raw_table + i * 4;
-            stream->sector_offsets[i] = (uint32_t)b[0]
-                                      | ((uint32_t)b[1] << 8)
-                                      | ((uint32_t)b[2] << 16)
-                                      | ((uint32_t)b[3] << 24);
+            stream->sector_offsets[i] = mpqfs_read_le32(raw_table + i * 4);
         }
 
         free(raw_table);
