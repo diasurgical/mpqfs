@@ -62,6 +62,7 @@ set(MPQFS_SOURCES
     src/mpq_archive.c
     src/mpq_crypto.c
     src/mpq_stream.c
+    src/mpq_writer.c
 )
 
 if(_MPQFS_SDL_VER GREATER 0)

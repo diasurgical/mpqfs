@@ -20,6 +20,7 @@
 #include "mpq_crypto.h"
 #include "mpq_archive.h"
 #include "mpq_stream.h"
+#include "mpq_writer.h"
 
 /* Public header. */
 #include <mpqfs/mpqfs.h>
@@ -646,6 +647,398 @@ static void test_null_archive_queries(void)
  * Interactive mode: open a real MPQ and optionally extract a file
  * ----------------------------------------------------------------------- */
 
+/* -----------------------------------------------------------------------
+ * Test: writer round-trip — create an archive, read it back
+ * ----------------------------------------------------------------------- */
+
+static void test_writer_roundtrip(void)
+{
+    TEST_BEGIN("writer_roundtrip");
+
+    const char *tmp_path = "/tmp/mpqfs_test_writer_roundtrip.mpq";
+    const char *filename = "hero";
+    const char *file_data = "ABCDEFGHIJKLMNOP";
+    size_t file_data_len = 16;
+
+    /* Create archive with one file. */
+    mpqfs_writer_t *writer = mpqfs_writer_create(tmp_path, 16);
+    ASSERT_NOT_NULL(writer);
+
+    bool ok = mpqfs_writer_add_file(writer, filename, file_data, file_data_len);
+    ASSERT_TRUE(ok);
+
+    ok = mpqfs_writer_close(writer);
+    ASSERT_TRUE(ok);
+
+    /* Read it back. */
+    mpqfs_archive_t *archive = mpqfs_open(tmp_path);
+    if (!archive) {
+        printf("    (mpqfs_open failed: %s)\n", mpqfs_last_error());
+    }
+    ASSERT_NOT_NULL(archive);
+
+    ASSERT_TRUE(mpqfs_has_file(archive, filename));
+    ASSERT_EQ_SZ(mpqfs_file_size(archive, filename), file_data_len);
+
+    size_t read_size = 0;
+    void *data = mpqfs_read_file(archive, filename, &read_size);
+    ASSERT_NOT_NULL(data);
+    ASSERT_EQ_SZ(read_size, file_data_len);
+    ASSERT_TRUE(memcmp(data, file_data, file_data_len) == 0);
+    free(data);
+
+    /* Non-existent file should not be found. */
+    ASSERT_TRUE(!mpqfs_has_file(archive, "nonexistent"));
+
+    mpqfs_close(archive);
+    remove(tmp_path);
+
+    TEST_END();
+}
+
+/* -----------------------------------------------------------------------
+ * Test: writer with multiple files
+ * ----------------------------------------------------------------------- */
+
+static void test_writer_multiple_files(void)
+{
+    TEST_BEGIN("writer_multiple_files");
+
+    const char *tmp_path = "/tmp/mpqfs_test_writer_multi.mpq";
+
+    const char *names[]  = { "hero", "game", "levels\\l1data\\town.dun" };
+    const char *datas[]  = { "HeroData1234", "GameState!!", "DungeonMapBinary" };
+    size_t      sizes[]  = { 12, 11, 16 };
+    int         nfiles   = 3;
+
+    /* Create archive with three files. */
+    mpqfs_writer_t *writer = mpqfs_writer_create(tmp_path, 16);
+    ASSERT_NOT_NULL(writer);
+
+    for (int i = 0; i < nfiles; i++) {
+        bool ok = mpqfs_writer_add_file(writer, names[i], datas[i], sizes[i]);
+        ASSERT_TRUE(ok);
+    }
+
+    bool ok = mpqfs_writer_close(writer);
+    ASSERT_TRUE(ok);
+
+    /* Read them all back. */
+    mpqfs_archive_t *archive = mpqfs_open(tmp_path);
+    if (!archive) {
+        printf("    (mpqfs_open failed: %s)\n", mpqfs_last_error());
+    }
+    ASSERT_NOT_NULL(archive);
+
+    for (int i = 0; i < nfiles; i++) {
+        ASSERT_TRUE(mpqfs_has_file(archive, names[i]));
+        ASSERT_EQ_SZ(mpqfs_file_size(archive, names[i]), sizes[i]);
+
+        size_t read_size = 0;
+        void *data = mpqfs_read_file(archive, names[i], &read_size);
+        ASSERT_NOT_NULL(data);
+        ASSERT_EQ_SZ(read_size, sizes[i]);
+        ASSERT_TRUE(memcmp(data, datas[i], sizes[i]) == 0);
+        free(data);
+    }
+
+    /* Verify case-insensitive lookup works on written files. */
+    ASSERT_TRUE(mpqfs_has_file(archive, "HERO"));
+    ASSERT_TRUE(mpqfs_has_file(archive, "Hero"));
+    ASSERT_TRUE(mpqfs_has_file(archive, "LEVELS\\L1DATA\\TOWN.DUN"));
+
+    /* Forward-slash normalisation. */
+    ASSERT_TRUE(mpqfs_has_file(archive, "levels/l1data/town.dun"));
+
+    mpqfs_close(archive);
+    remove(tmp_path);
+
+    TEST_END();
+}
+
+/* -----------------------------------------------------------------------
+ * Test: writer with an empty archive (no files added)
+ * ----------------------------------------------------------------------- */
+
+static void test_writer_empty_archive(void)
+{
+    TEST_BEGIN("writer_empty_archive");
+
+    const char *tmp_path = "/tmp/mpqfs_test_writer_empty.mpq";
+
+    /* Create archive with zero files. */
+    mpqfs_writer_t *writer = mpqfs_writer_create(tmp_path, 4);
+    ASSERT_NOT_NULL(writer);
+
+    bool ok = mpqfs_writer_close(writer);
+    ASSERT_TRUE(ok);
+
+    /* Should open successfully. */
+    mpqfs_archive_t *archive = mpqfs_open(tmp_path);
+    if (!archive) {
+        printf("    (mpqfs_open failed: %s)\n", mpqfs_last_error());
+    }
+    ASSERT_NOT_NULL(archive);
+
+    /* No files should be found. */
+    ASSERT_TRUE(!mpqfs_has_file(archive, "anything"));
+    ASSERT_EQ_SZ(mpqfs_file_size(archive, "anything"), 0);
+
+    mpqfs_close(archive);
+    remove(tmp_path);
+
+    TEST_END();
+}
+
+/* -----------------------------------------------------------------------
+ * Test: writer with a zero-length file
+ * ----------------------------------------------------------------------- */
+
+static void test_writer_empty_file(void)
+{
+    TEST_BEGIN("writer_empty_file");
+
+    const char *tmp_path = "/tmp/mpqfs_test_writer_emptyfile.mpq";
+
+    mpqfs_writer_t *writer = mpqfs_writer_create(tmp_path, 4);
+    ASSERT_NOT_NULL(writer);
+
+    /* Add a zero-length file. */
+    bool ok = mpqfs_writer_add_file(writer, "empty", NULL, 0);
+    ASSERT_TRUE(ok);
+
+    /* Also add a normal file alongside it. */
+    ok = mpqfs_writer_add_file(writer, "notempty", "data", 4);
+    ASSERT_TRUE(ok);
+
+    ok = mpqfs_writer_close(writer);
+    ASSERT_TRUE(ok);
+
+    mpqfs_archive_t *archive = mpqfs_open(tmp_path);
+    ASSERT_NOT_NULL(archive);
+
+    /* Zero-length file should exist with size 0. */
+    ASSERT_TRUE(mpqfs_has_file(archive, "empty"));
+    ASSERT_EQ_SZ(mpqfs_file_size(archive, "empty"), 0);
+
+    /* Normal file should be readable. */
+    ASSERT_TRUE(mpqfs_has_file(archive, "notempty"));
+    ASSERT_EQ_SZ(mpqfs_file_size(archive, "notempty"), 4);
+
+    size_t read_size = 0;
+    void *data = mpqfs_read_file(archive, "notempty", &read_size);
+    ASSERT_NOT_NULL(data);
+    ASSERT_EQ_SZ(read_size, 4);
+    ASSERT_TRUE(memcmp(data, "data", 4) == 0);
+    free(data);
+
+    mpqfs_close(archive);
+    remove(tmp_path);
+
+    TEST_END();
+}
+
+/* -----------------------------------------------------------------------
+ * Test: writer discard (no data written)
+ * ----------------------------------------------------------------------- */
+
+static void test_writer_discard(void)
+{
+    TEST_BEGIN("writer_discard");
+
+    const char *tmp_path = "/tmp/mpqfs_test_writer_discard.mpq";
+
+    mpqfs_writer_t *writer = mpqfs_writer_create(tmp_path, 8);
+    ASSERT_NOT_NULL(writer);
+
+    bool ok = mpqfs_writer_add_file(writer, "hero", "test", 4);
+    ASSERT_TRUE(ok);
+
+    /* Discard — should not crash, frees all resources. */
+    mpqfs_writer_discard(writer);
+
+    /* Discard NULL should be safe. */
+    mpqfs_writer_discard(NULL);
+
+    /* Clean up any file that might have been partially written. */
+    remove(tmp_path);
+
+    TEST_END();
+}
+
+/* -----------------------------------------------------------------------
+ * Test: writer NULL safety
+ * ----------------------------------------------------------------------- */
+
+static void test_writer_null_safety(void)
+{
+    TEST_BEGIN("writer_null_safety");
+
+    /* Create with NULL path should fail. */
+    mpqfs_writer_t *w = mpqfs_writer_create(NULL, 16);
+    ASSERT_NULL(w);
+
+    /* Create with NULL fp should fail. */
+    w = mpqfs_writer_create_fp(NULL, 16);
+    ASSERT_NULL(w);
+
+    /* Add file with NULL writer should fail. */
+    bool ok = mpqfs_writer_add_file(NULL, "test", "data", 4);
+    ASSERT_TRUE(!ok);
+
+    /* Close with NULL writer should fail (returns false). */
+    ok = mpqfs_writer_close(NULL);
+    ASSERT_TRUE(!ok);
+
+    TEST_END();
+}
+
+/* -----------------------------------------------------------------------
+ * Test: writer round-trip with read_file_into
+ * ----------------------------------------------------------------------- */
+
+static void test_writer_read_into(void)
+{
+    TEST_BEGIN("writer_read_into");
+
+    const char *tmp_path = "/tmp/mpqfs_test_writer_readinto.mpq";
+    const char *filename = "game";
+    const char *file_data = "SaveGamePayload_12345678";
+    size_t file_data_len = 24;
+
+    mpqfs_writer_t *writer = mpqfs_writer_create(tmp_path, 8);
+    ASSERT_NOT_NULL(writer);
+
+    bool ok = mpqfs_writer_add_file(writer, filename, file_data, file_data_len);
+    ASSERT_TRUE(ok);
+
+    ok = mpqfs_writer_close(writer);
+    ASSERT_TRUE(ok);
+
+    mpqfs_archive_t *archive = mpqfs_open(tmp_path);
+    ASSERT_NOT_NULL(archive);
+
+    /* Read into caller-supplied buffer. */
+    char buf[64] = {0};
+    size_t n = mpqfs_read_file_into(archive, filename, buf, sizeof(buf));
+    ASSERT_EQ_SZ(n, file_data_len);
+    ASSERT_TRUE(memcmp(buf, file_data, file_data_len) == 0);
+
+    /* Buffer too small should fail. */
+    char tiny[4];
+    size_t n2 = mpqfs_read_file_into(archive, filename, tiny, sizeof(tiny));
+    ASSERT_EQ_SZ(n2, 0);
+
+    mpqfs_close(archive);
+    remove(tmp_path);
+
+    TEST_END();
+}
+
+/* -----------------------------------------------------------------------
+ * Test: writer FILE* variant (mpqfs_writer_create_fp)
+ * ----------------------------------------------------------------------- */
+
+static void test_writer_fp(void)
+{
+    TEST_BEGIN("writer_fp");
+
+    const char *tmp_path = "/tmp/mpqfs_test_writer_fp.mpq";
+    const char *filename = "testfile";
+    const char *file_data = "FP_DATA";
+    size_t file_data_len = 7;
+
+    /* Open the file ourselves. */
+    FILE *fp = fopen(tmp_path, "wb");
+    ASSERT_NOT_NULL(fp);
+
+    mpqfs_writer_t *writer = mpqfs_writer_create_fp(fp, 8);
+    ASSERT_NOT_NULL(writer);
+
+    bool ok = mpqfs_writer_add_file(writer, filename, file_data, file_data_len);
+    ASSERT_TRUE(ok);
+
+    ok = mpqfs_writer_close(writer);
+    ASSERT_TRUE(ok);
+
+    /* We still own the FILE* — close it ourselves. */
+    fclose(fp);
+
+    /* Verify by reading back. */
+    mpqfs_archive_t *archive = mpqfs_open(tmp_path);
+    ASSERT_NOT_NULL(archive);
+
+    ASSERT_TRUE(mpqfs_has_file(archive, filename));
+    ASSERT_EQ_SZ(mpqfs_file_size(archive, filename), file_data_len);
+
+    size_t read_size = 0;
+    void *data = mpqfs_read_file(archive, filename, &read_size);
+    ASSERT_NOT_NULL(data);
+    ASSERT_EQ_SZ(read_size, file_data_len);
+    ASSERT_TRUE(memcmp(data, file_data, file_data_len) == 0);
+    free(data);
+
+    mpqfs_close(archive);
+    remove(tmp_path);
+
+    TEST_END();
+}
+
+/* -----------------------------------------------------------------------
+ * Test: writer hash table auto-sizing (power of 2 rounding)
+ * ----------------------------------------------------------------------- */
+
+static void test_writer_hash_table_sizing(void)
+{
+    TEST_BEGIN("writer_hash_table_sizing");
+
+    const char *tmp_path = "/tmp/mpqfs_test_writer_htsize.mpq";
+
+    /* Request hash table size of 5 — should be rounded up to 8. */
+    mpqfs_writer_t *writer = mpqfs_writer_create(tmp_path, 5);
+    ASSERT_NOT_NULL(writer);
+
+    /* Add 6 files (which fits in a table of 8, since we need
+     * at least 1 empty slot = capacity of 7). */
+    const char *names[] = { "a", "b", "c", "d", "e", "f" };
+    for (int i = 0; i < 6; i++) {
+        char data[1] = { (char)('A' + i) };
+        bool ok = mpqfs_writer_add_file(writer, names[i], data, 1);
+        ASSERT_TRUE(ok);
+    }
+
+    bool ok = mpqfs_writer_close(writer);
+    ASSERT_TRUE(ok);
+
+    /* Read them back — all 6 should be present. */
+    mpqfs_archive_t *archive = mpqfs_open(tmp_path);
+    ASSERT_NOT_NULL(archive);
+
+    for (int i = 0; i < 6; i++) {
+        ASSERT_TRUE(mpqfs_has_file(archive, names[i]));
+        ASSERT_EQ_SZ(mpqfs_file_size(archive, names[i]), 1);
+
+        size_t sz = 0;
+        void *data = mpqfs_read_file(archive, names[i], &sz);
+        ASSERT_NOT_NULL(data);
+        ASSERT_EQ_SZ(sz, 1);
+        ASSERT_TRUE(((char *)data)[0] == (char)('A' + i));
+        free(data);
+    }
+
+    /* Verify hash table count is 8 (rounded from 5). */
+    ASSERT_EQ_U32(archive->header.hash_table_count, 8);
+
+    mpqfs_close(archive);
+    remove(tmp_path);
+
+    TEST_END();
+}
+
+/* -----------------------------------------------------------------------
+ * Interactive mode: open a real MPQ and optionally extract a file
+ * ----------------------------------------------------------------------- */
+
 static int interactive_mode(const char *mpq_path, const char *filename)
 {
     printf("Opening: %s\n", mpq_path);
@@ -717,6 +1110,17 @@ int main(int argc, char *argv[])
     test_null_archive_queries();
     test_synthetic_mpq();
     test_stream_seek();
+
+    /* Writer tests */
+    test_writer_roundtrip();
+    test_writer_multiple_files();
+    test_writer_empty_archive();
+    test_writer_empty_file();
+    test_writer_discard();
+    test_writer_null_safety();
+    test_writer_read_into();
+    test_writer_fp();
+    test_writer_hash_table_sizing();
 
     printf("\n");
     printf("Results: %d/%d passed", g_tests_passed, g_tests_run);

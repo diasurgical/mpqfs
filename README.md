@@ -1,13 +1,14 @@
 # mpqfs
 
-A minimal, MIT-licensed C99 library for reading MPQ v1 archives (as used by Diablo 1), with native SDL 1.2 / SDL 2 / SDL 3 integration.
+A minimal, MIT-licensed C99 library for reading and writing MPQ v1 archives (as used by Diablo 1), with native SDL 1.2 / SDL 2 / SDL 3 integration.
 
-**mpqfs** provides a clean, read-only streaming interface to files inside MPQ archives, designed to slot directly into game engines via `SDL_RWops` (SDL 1.2 & 2) or `SDL_IOStream` (SDL 3).
+**mpqfs** provides a clean streaming interface to files inside MPQ archives, designed to slot directly into game engines via `SDL_RWops` (SDL 1.2 & 2) or `SDL_IOStream` (SDL 3). It also supports creating MPQ archives in the basic style used by Diablo 1 for its save-game files.
 
 ## Features
 
 - **MPQ v1 format** support (Diablo 1 `DIABDAT.MPQ`)
 - **PKWARE DCL** (implode) decompression — the compression scheme used by Diablo 1
+- **MPQ v1 writing** — create archives compatible with Diablo 1's save-game format
 - **SDL 1.2 / SDL 2 / SDL 3** adapter: expose archived files as seekable streams
 - **Zero-copy sector-based streaming** (files are not fully decompressed up front)
 - **Written in C99**, compiles cleanly as **C++11 through C++20**
@@ -125,6 +126,8 @@ fclose(fp);  // caller retains ownership of the FILE*
 
 ## Quick start
 
+### Reading an archive
+
 ```c
 #include <mpqfs/mpqfs.h>
 
@@ -158,6 +161,35 @@ mpqfs_close(archive);
 ```
 
 For SDL 3, use `mpqfs_open_io()` which returns an `SDL_IOStream *` instead.
+
+### Writing an archive (Diablo 1 save-game format)
+
+```c
+#include <mpqfs/mpqfs.h>
+
+/* Create a new MPQ archive */
+mpqfs_writer_t *writer = mpqfs_writer_create("save.sv", 16);
+if (!writer) {
+    fprintf(stderr, "failed to create archive: %s\n", mpqfs_last_error());
+    return 1;
+}
+
+/* Add files — data is copied, so buffers can be freed immediately */
+mpqfs_writer_add_file(writer, "hero", hero_data, hero_size);
+mpqfs_writer_add_file(writer, "game", game_data, game_size);
+mpqfs_writer_add_file(writer, "levels\\town.dun", dun_data, dun_size);
+
+/* Finalise — writes header, file data, and encrypted tables */
+if (!mpqfs_writer_close(writer)) {
+    fprintf(stderr, "failed to write archive: %s\n", mpqfs_last_error());
+    return 1;
+}
+/* writer is freed by close — do not use it after this point */
+```
+
+The writer produces archives that are byte-compatible with the original
+Diablo 1 save-game format: uncompressed files, no file-level encryption,
+with standard encrypted hash and block tables.
 
 ## API reference
 
@@ -204,6 +236,48 @@ size_t mpqfs_read_file_into(mpqfs_archive_t *archive, const char *filename,
                             void *buffer, size_t buffer_size);
 ```
 
+### Archive writing
+
+```c
+/* Create a new MPQ archive at the given path.
+ * hash_table_size is rounded up to the next power of two (minimum 4).
+ * Must be larger than the number of files to add. */
+mpqfs_writer_t *mpqfs_writer_create(const char *path,
+                                    uint32_t hash_table_size);
+
+/* Create from an existing FILE* (does NOT take ownership). */
+mpqfs_writer_t *mpqfs_writer_create_fp(FILE *fp,
+                                       uint32_t hash_table_size);
+
+/* Create from a file descriptor (takes ownership).
+ * Only available when MPQFS_HAS_FDOPEN is 1. */
+mpqfs_writer_t *mpqfs_writer_create_fd(int fd,
+                                       uint32_t hash_table_size);
+
+/* Add a file to the archive. Makes owned copies of filename and data.
+ * Files are stored uncompressed without encryption (Diablo 1 style). */
+bool mpqfs_writer_add_file(mpqfs_writer_t *writer, const char *filename,
+                           const void *data, size_t size);
+
+/* Finalise the archive: writes header, file data, and encrypted
+ * hash/block tables. Frees the writer regardless of success/failure. */
+bool mpqfs_writer_close(mpqfs_writer_t *writer);
+
+/* Discard a writer without writing. Frees all resources. */
+void mpqfs_writer_discard(mpqfs_writer_t *writer);
+```
+
+The writer produces the following on-disk layout:
+
+| Section     | Size                              | Notes                           |
+|-------------|-----------------------------------|---------------------------------|
+| MPQ Header  | 32 bytes                          | Signature, offsets, counts      |
+| File data   | Sum of all file sizes             | Concatenated, uncompressed      |
+| Hash table  | `hash_table_size × 16` bytes      | Encrypted with standard key     |
+| Block table | `file_count × 16` bytes           | Encrypted with standard key     |
+
+This layout is compatible with the original Diablo 1 save-game format.
+
 ### SDL streaming
 
 ```c
@@ -237,6 +311,17 @@ Diablo 1's `DIABDAT.MPQ` is an MPQ v1 (format version 0) archive. Key details:
 - **No encryption** on individual files in `DIABDAT.MPQ`
 - Filenames use **backslash** separators and are **case-insensitive**
 
+### Save-game format
+
+Diablo 1 uses MPQ v1 archives for its save-game files (`.sv`). These are simpler than `DIABDAT.MPQ`:
+
+- **No compression** — all files stored raw
+- **No file-level encryption** — only the hash and block tables are encrypted
+- **Small file count** — typically just a handful of files (`hero`, `game`, dungeon levels)
+- **Hash table** is a power-of-two size, with the same encrypted format as any MPQ
+
+The `mpqfs_writer_*` API produces archives in exactly this style, ensuring byte-level compatibility with the original game's save format.
+
 ## Running tests
 
 ```sh
@@ -246,7 +331,9 @@ cmake --build build
 ./build/mpqfs_test DIABDAT.MPQ "file\\name"  # extract a file to stdout
 ```
 
-The unit tests include a synthetic MPQ round-trip: the test constructs a valid MPQ archive in memory (with encrypted hash/block tables), writes it to a temp file, opens it, and verifies file lookup, size queries, reads, and seeking all produce correct results.
+The unit tests include:
+- A synthetic MPQ round-trip: constructs a valid MPQ archive in memory (with encrypted hash/block tables), writes it to a temp file, opens it, and verifies file lookup, size queries, reads, and seeking all produce correct results.
+- Writer round-trip tests: creates archives via the `mpqfs_writer_*` API, reads them back with the reader API, and verifies all files are intact. Covers single files, multiple files, empty archives, zero-length files, FILE* variants, and hash table auto-sizing.
 
 ## License
 
