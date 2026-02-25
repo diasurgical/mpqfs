@@ -2,7 +2,8 @@
  * mpqfs — minimal MPQ v1 reader with SDL integration
  * SPDX-License-Identifier: MIT
  *
- * Sector-based file streaming with PKWARE DCL decompression.
+ * Sector-based file streaming with PKWARE DCL / zlib decompression
+ * and optional per-file decryption.
  *
  * MPQ files are divided into sectors of `sector_size` bytes (typically
  * 4096).  Compressed files begin with a sector offset table that gives
@@ -13,6 +14,12 @@
  * For each read, we determine which sector(s) the request spans,
  * decompress on demand, cache the most recent sector, and copy into
  * the caller's buffer.
+ *
+ * Encrypted files (MPQ_FILE_ENCRYPTED) have their sector offset table
+ * and sector data encrypted with a key derived from the filename.
+ * When MPQ_FILE_FIX_KEY is also set, the key is further adjusted by
+ * the block offset and file size.  Each sector is encrypted with
+ * (key + sector_index).
  */
 
 #include "mpq_platform.h"
@@ -21,6 +28,7 @@
 #include "mpq_explode.h"
 
 #include <zlib.h>
+#include <bzlib.h>
 
 #include <stdlib.h>
 #include <string.h>
@@ -101,6 +109,13 @@ static int mpq_stream_load_sector(mpq_stream_t *stream, uint32_t sector_idx)
                               "uncompressed sector %u", sector_idx);
                 return -1;
             }
+            /* Decrypt in-place if needed. */
+            if (stream->file_key != 0) {
+                /* Truncate to complete uint32_t words (matching StormLib). */
+                size_t dwords = expect / 4;
+                mpq_decrypt_block((uint32_t *)stream->sector_buf,
+                                  dwords, stream->file_key + sector_idx);
+            }
             stream->cached_sector     = sector_idx;
             stream->cached_sector_len = expect;
             return 0;
@@ -120,6 +135,13 @@ static int mpq_stream_load_sector(mpq_stream_t *stream, uint32_t sector_idx)
             mpq_set_error(archive, "mpq_stream: read error on "
                           "compressed sector %u", sector_idx);
             return -1;
+        }
+
+        /* Decrypt the compressed data before decompression. */
+        if (stream->file_key != 0) {
+            size_t dwords = comp_size / 4;
+            mpq_decrypt_block((uint32_t *)comp_buf,
+                              dwords, stream->file_key + sector_idx);
         }
 
         int rc;
@@ -193,8 +215,24 @@ static int mpq_stream_load_sector(mpq_stream_t *stream, uint32_t sector_idx)
                 }
             }
 
+            /* --- bzip2 (0x10) --- */
+            if (comp_method & MPQ_COMP_BZIP2) {
+                unsigned int dest_len = (unsigned int)expect;
+                int brc = BZ2_bzBuffToBuffDecompress(
+                              (char *)stream->sector_buf, &dest_len,
+                              (char *)src_data, (unsigned int)src_len,
+                              0, 0);
+                if (brc != BZ_OK) {
+                    free(comp_buf);
+                    mpq_set_error(archive, "mpq_stream: bzip2 decompress "
+                                  "failed on sector %u (brc=%d)",
+                                  sector_idx, brc);
+                    return -1;
+                }
+            }
+
             /* --- Unsupported methods --- */
-            if (comp_method & ~(MPQ_COMP_PKWARE | MPQ_COMP_ZLIB)) {
+            if (comp_method & ~(MPQ_COMP_PKWARE | MPQ_COMP_ZLIB | MPQ_COMP_BZIP2)) {
                 free(comp_buf);
                 mpq_set_error(archive, "mpq_stream: unsupported compression "
                               "method 0x%02X on sector %u",
@@ -224,6 +262,13 @@ static int mpq_stream_load_sector(mpq_stream_t *stream, uint32_t sector_idx)
             return -1;
         }
 
+        /* Decrypt in-place if needed. */
+        if (stream->file_key != 0) {
+            size_t dwords = expect / 4;
+            mpq_decrypt_block((uint32_t *)stream->sector_buf,
+                              dwords, stream->file_key + sector_idx);
+        }
+
         stream->cached_sector     = sector_idx;
         stream->cached_sector_len = expect;
         return 0;
@@ -235,6 +280,13 @@ static int mpq_stream_load_sector(mpq_stream_t *stream, uint32_t sector_idx)
  * ----------------------------------------------------------------------- */
 
 mpq_stream_t *mpq_stream_open(mpqfs_archive_t *archive, uint32_t block_index)
+{
+    return mpq_stream_open_named(archive, block_index, NULL);
+}
+
+mpq_stream_t *mpq_stream_open_named(mpqfs_archive_t *archive,
+                                     uint32_t block_index,
+                                     const char *filename)
 {
     if (!archive) {
         mpq_set_error(NULL, "mpq_stream_open: archive is NULL");
@@ -255,6 +307,13 @@ mpq_stream_t *mpq_stream_open(mpqfs_archive_t *archive, uint32_t block_index)
         return NULL;
     }
 
+    /* If the file is encrypted, we MUST have the filename to derive the key. */
+    if ((block->flags & MPQ_FILE_ENCRYPTED) && !filename) {
+        mpq_set_error(archive, "mpq_stream_open: block %u is encrypted but "
+                      "no filename provided for key derivation", block_index);
+        return NULL;
+    }
+
     mpq_stream_t *stream = (mpq_stream_t *)calloc(1, sizeof(*stream));
     if (!stream) {
         mpq_set_error(archive, "mpq_stream_open: out of memory");
@@ -271,6 +330,15 @@ mpq_stream_t *mpq_stream_open(mpqfs_archive_t *archive, uint32_t block_index)
     stream->position        = 0;
     stream->cached_sector   = (uint32_t)-1;
     stream->cached_sector_len = 0;
+
+    /* Derive the file decryption key if the file is encrypted. */
+    if (block->flags & MPQ_FILE_ENCRYPTED) {
+        int adjust = (block->flags & MPQ_FILE_FIX_KEY) != 0;
+        stream->file_key = mpq_file_key(filename, block->offset,
+                                        block->file_size, adjust);
+    } else {
+        stream->file_key = 0;
+    }
 
     /* Zero-length file — nothing else to set up. */
     if (stream->file_size == 0) {
@@ -336,19 +404,6 @@ mpq_stream_t *mpq_stream_open(mpqfs_archive_t *archive, uint32_t block_index)
             return NULL;
         }
 
-        /* If the file is encrypted, the sector offset table is encrypted
-         * with the file key.  Diablo 1's DIABDAT.MPQ does not use file
-         * encryption, but we handle it for completeness. */
-        if (stream->flags & MPQ_FILE_ENCRYPTED) {
-            /* We would need the filename to derive the key, but we don't
-             * have it here.  For now, we read the table as-is and hope
-             * it's not encrypted.  A future enhancement could accept the
-             * filename or pre-computed key.
-             *
-             * TODO: accept filename/key for encrypted file support.
-             */
-        }
-
         /* Convert from little-endian to native. */
         for (uint32_t i = 0; i < table_entries; i++) {
             stream->sector_offsets[i] = mpqfs_read_le32(raw_table + i * 4);
@@ -356,17 +411,25 @@ mpq_stream_t *mpq_stream_open(mpqfs_archive_t *archive, uint32_t block_index)
 
         free(raw_table);
 
+        /* If the file is encrypted, the sector offset table is encrypted
+         * with the base file key (no sector index added). */
+        if (stream->file_key != 0) {
+            mpq_decrypt_block(stream->sector_offsets, table_entries,
+                              stream->file_key - 1);
+        }
+
         /* Basic sanity check on the offset table. */
         if (stream->sector_offsets[0] != table_bytes) {
-            /*
-             * The first entry should point right past the offset table
-             * itself, meaning the first sector's compressed data starts
-             * immediately after the table.  If it doesn't match, the
-             * table might be encrypted or corrupted.
-             */
-            /* Allow a mismatch silently — some MPQ implementations
-             * store offsets relative to different bases.  We will
-             * detect problems when actually reading sectors. */
+            mpq_set_error(archive, "mpq_stream_open: sector offset table "
+                          "validation failed for block %u (expected first "
+                          "entry %u, got %u — table may be encrypted or "
+                          "corrupt)", block_index,
+                          (unsigned)table_bytes,
+                          stream->sector_offsets[0]);
+            free(stream->sector_offsets);
+            free(stream->sector_buf);
+            free(stream);
+            return NULL;
         }
     } else if (stream->flags & MPQ_FILE_SINGLE_UNIT) {
         /*

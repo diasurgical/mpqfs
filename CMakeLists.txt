@@ -56,8 +56,9 @@ else()
     message(STATUS "mpqfs: SDL integration disabled")
 endif()
 
-# --- zlib (required for MPQ sector decompression) ---
+# --- zlib and bzip2 (required for MPQ sector decompression) ---
 find_package(ZLIB REQUIRED)
+find_package(BZip2 REQUIRED)
 
 # --- Library target ---
 
@@ -95,8 +96,8 @@ target_include_directories(mpqfs
 # SDL version define (used internally by mpq_sdl.c)
 target_compile_definitions(mpqfs PRIVATE MPQFS_SDL_VERSION=${_MPQFS_SDL_VER})
 
-# zlib linkage
-target_link_libraries(mpqfs PRIVATE ZLIB::ZLIB)
+# zlib and bzip2 linkage
+target_link_libraries(mpqfs PRIVATE ZLIB::ZLIB BZip2::BZip2)
 
 # SDL linkage
 if(_MPQFS_SDL_VER EQUAL 3)

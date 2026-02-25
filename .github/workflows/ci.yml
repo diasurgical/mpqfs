@@ -20,7 +20,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y zlib1g-dev
+        run: sudo apt-get update && sudo apt-get install -y zlib1g-dev libbz2-dev
 
       - name: Set compiler
         run: |
@@ -39,13 +39,15 @@ jobs:
       - name: Unit tests
         run: ./build/mpqfs_test
 
-      - name: Download spawn.mpq
-        run: wget -qnc https://github.com/diasurgical/devilutionx-assets/releases/download/v2/spawn.mpq -P build
+      - name: Download test assets
+        run: |
+          wget -qnc https://github.com/diasurgical/devilutionx-assets/releases/download/v2/spawn.mpq -P build
+          wget -qnc https://github.com/diasurgical/devilutionx-assets/releases/download/v5/devilutionx.mpq -P build
 
-      - name: Integration test - archive opens
+      - name: "Integration: spawn.mpq opens"
         run: ./build/mpqfs_test build/spawn.mpq 2>&1 | grep -q "Archive opened successfully"
 
-      - name: Integration test - extract PCX
+      - name: "Integration: spawn.mpq extract PCX (zlib)"
         run: |
           ./build/mpqfs_test build/spawn.mpq 'ui_art\title.pcx' > build/title.pcx
           EXPECTED=80648
@@ -55,9 +57,44 @@ jobs:
             echo "::error::Size mismatch: got $ACTUAL, expected $EXPECTED"
             exit 1
           fi
-          # Verify PCX magic byte
           MAGIC=$(xxd -l1 -p build/title.pcx)
           if [ "$MAGIC" != "0a" ]; then
             echo "::error::Bad PCX magic: got 0x$MAGIC, expected 0x0a"
             exit 1
           fi
+
+      - name: "Integration: devilutionx.mpq encrypted listfile"
+        run: |
+          ./build/mpqfs_test build/devilutionx.mpq '(listfile)' > build/dvx_listfile.txt
+          COUNT=$(wc -l < build/dvx_listfile.txt)
+          echo "Listfile contains $COUNT entries"
+          if [ "$COUNT" -lt 100 ]; then
+            echo "::error::Listfile too short ($COUNT lines), expected 200+"
+            exit 1
+          fi
+
+      - name: "Integration: devilutionx.mpq extract all files (bzip2 + encryption)"
+        run: |
+          python3 -c "
+          import subprocess, sys
+          fails = 0
+          total = 0
+          for line in open('build/dvx_listfile.txt', 'r'):
+              fname = line.strip()
+              if not fname:
+                  continue
+              total += 1
+              r = subprocess.run(
+                  ['./build/mpqfs_test', 'build/devilutionx.mpq', fname],
+                  capture_output=True, timeout=10)
+              if r.returncode != 0:
+                  fails += 1
+                  err = r.stderr.decode().strip().split('\n')
+                  errline = [l for l in err if 'Error' in l or 'error' in l]
+                  print(f'FAIL: {fname}')
+                  if errline:
+                      print(f'      {errline[0].strip()}')
+          print(f'Total: {total}  Passed: {total - fails}  Failed: {fails}')
+          if fails:
+              sys.exit(1)
+          "

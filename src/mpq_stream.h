@@ -54,6 +54,13 @@ typedef struct mpq_stream {
     uint32_t *sector_offsets;
 
     /*
+     * Decryption key for this file (0 if not encrypted).
+     * Derived from the filename via mpq_file_key() when the stream is
+     * opened with mpq_stream_open_named().
+     */
+    uint32_t file_key;
+
+    /*
      * Cached decompressed sector buffer.
      * Allocated to sector_size bytes.
      */
@@ -72,8 +79,25 @@ typedef struct mpq_stream {
 /*
  * Open a stream to the file identified by `block_index` inside `archive`.
  * Returns NULL on error (sets mpqfs_last_error).
+ *
+ * This variant does NOT support encrypted files — use mpq_stream_open_named()
+ * instead when the file may be encrypted.
  */
 mpq_stream_t *mpq_stream_open(mpqfs_archive_t *archive, uint32_t block_index);
+
+/*
+ * Open a stream to the file identified by `block_index`, using `filename`
+ * to derive the decryption key if the file is encrypted.
+ *
+ * `filename` is the archive-internal path (e.g. "ui_art\\title.pcx" or
+ * "(listfile)").  If the file is not encrypted, `filename` is ignored and
+ * the call is equivalent to mpq_stream_open().
+ *
+ * Returns NULL on error (sets mpqfs_last_error).
+ */
+mpq_stream_t *mpq_stream_open_named(mpqfs_archive_t *archive,
+                                     uint32_t block_index,
+                                     const char *filename);
 
 /*
  * Close a stream and free all associated memory.

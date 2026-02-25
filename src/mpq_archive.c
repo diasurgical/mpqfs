@@ -437,7 +437,7 @@ void *mpqfs_read_file(mpqfs_archive_t *archive, const char *filename,
         return NULL;
     }
 
-    mpq_stream_t *stream = mpq_stream_open(archive, bi);
+    mpq_stream_t *stream = mpq_stream_open_named(archive, bi, filename);
     if (!stream)
         return NULL;  /* error already set */
 
@@ -489,7 +489,7 @@ size_t mpqfs_read_file_into(mpqfs_archive_t *archive, const char *filename,
         return 0;
     }
 
-    mpq_stream_t *stream = mpq_stream_open(archive, bi);
+    mpq_stream_t *stream = mpq_stream_open_named(archive, bi, filename);
     if (!stream)
         return 0;  /* error already set */
 
