@@ -159,6 +159,25 @@ MPQFS_API mpqfs_archive_t *mpqfs_open_fd(int fd);
 #endif /* MPQFS_HAS_FDOPEN */
 
 /**
+ * Create an independent clone of an open archive.
+ *
+ * The clone re-opens the underlying file so that it has its own FILE*
+ * and can be read concurrently with the original.  The clone must be
+ * closed independently with mpqfs_close().
+ *
+ * This is needed for thread-safe SDL streaming: the audio thread gets
+ * a cloned archive so its fseek/fread calls don't race with the main
+ * thread.
+ *
+ * Returns NULL on error (e.g. if the original was opened via
+ * mpqfs_open_fp and the path is not known).
+ *
+ * @param archive  Handle to clone (must not be NULL).
+ * @return         New archive handle, or NULL on error (see mpqfs_last_error()).
+ */
+MPQFS_API mpqfs_archive_t *mpqfs_clone(const mpqfs_archive_t *archive);
+
+/**
  * Close an archive and free all associated resources.
  *
  * Any SDL streams (SDL_RWops / SDL_IOStream) created from this archive
@@ -237,6 +256,11 @@ MPQFS_API size_t mpqfs_read_file_into(mpqfs_archive_t *archive,
  * Closing the stream frees its internal resources but does NOT close the
  * parent archive.  The archive must remain open for the lifetime of the
  * stream.
+ *
+ * The "threadsafe" variants clone the archive internally so the returned
+ * stream owns an independent FILE* and can be used from any thread
+ * without racing with the original archive's reads.  The cloned archive
+ * is closed automatically when the stream is closed.
  * ----------------------------------------------------------------------- */
 
 #if defined(MPQFS_USE_SDL3) && MPQFS_USE_SDL3
@@ -250,6 +274,19 @@ MPQFS_API size_t mpqfs_read_file_into(mpqfs_archive_t *archive,
  */
 MPQFS_API SDL_IOStream *mpqfs_open_io(mpqfs_archive_t *archive,
                                       const char *filename);
+
+/**
+ * Create an SDL 3 IOStream that owns an independent archive clone.
+ *
+ * The returned stream is fully self-contained and safe to use from any
+ * thread.  Closing the stream closes the internal clone.
+ *
+ * @param archive   Open archive handle (used to clone).
+ * @param filename  Archive-relative path.
+ * @return          A seekable, read-only SDL_IOStream, or NULL on error.
+ */
+MPQFS_API SDL_IOStream *mpqfs_open_io_threadsafe(mpqfs_archive_t *archive,
+                                                 const char *filename);
 
 #endif /* MPQFS_USE_SDL3 */
 
@@ -265,6 +302,19 @@ MPQFS_API SDL_IOStream *mpqfs_open_io(mpqfs_archive_t *archive,
 MPQFS_API SDL_RWops *mpqfs_open_rwops(mpqfs_archive_t *archive,
                                       const char *filename);
 
+/**
+ * Create an SDL 2 RWops that owns an independent archive clone.
+ *
+ * The returned stream is fully self-contained and safe to use from any
+ * thread.  Closing the stream closes the internal clone.
+ *
+ * @param archive   Open archive handle (used to clone).
+ * @param filename  Archive-relative path.
+ * @return          A seekable, read-only SDL_RWops, or NULL on error.
+ */
+MPQFS_API SDL_RWops *mpqfs_open_rwops_threadsafe(mpqfs_archive_t *archive,
+                                                 const char *filename);
+
 #endif /* MPQFS_USE_SDL2 */
 
 #if defined(MPQFS_USE_SDL1) && MPQFS_USE_SDL1
@@ -278,6 +328,19 @@ MPQFS_API SDL_RWops *mpqfs_open_rwops(mpqfs_archive_t *archive,
  */
 MPQFS_API SDL_RWops *mpqfs_open_rwops(mpqfs_archive_t *archive,
                                       const char *filename);
+
+/**
+ * Create an SDL 1.2 RWops that owns an independent archive clone.
+ *
+ * The returned stream is fully self-contained and safe to use from any
+ * thread.  Closing the stream closes the internal clone.
+ *
+ * @param archive   Open archive handle (used to clone).
+ * @param filename  Archive-relative path.
+ * @return          A seekable, read-only SDL_RWops, or NULL on error.
+ */
+MPQFS_API SDL_RWops *mpqfs_open_rwops_threadsafe(mpqfs_archive_t *archive,
+                                                 const char *filename);
 
 #endif /* MPQFS_USE_SDL1 */
 
@@ -426,6 +489,156 @@ MPQFS_API void mpqfs_writer_discard(mpqfs_writer_t *writer);
  * process-global.
  */
 MPQFS_API const char *mpqfs_last_error(void);
+
+/* -----------------------------------------------------------------------
+ * Crypto primitives
+ *
+ * These expose the internal MPQ cryptographic functions for use by
+ * consumers that implement their own MPQ writer (e.g. DevilutionX's
+ * MpqWriter).  Every function calls mpqfs_crypto_init() internally,
+ * so explicit initialisation is never required.
+ * ----------------------------------------------------------------------- */
+
+/**
+ * Initialise the global MPQ encryption table.
+ *
+ * Called automatically by mpqfs_open() / mpqfs_writer_create() and by
+ * every other public crypto function.  Idempotent and thread-safe
+ * after the first call.  Provided for consumers that want to be
+ * explicit about initialisation order.
+ */
+MPQFS_API void mpqfs_crypto_init(void);
+
+/**
+ * Compute an MPQ hash for a NUL-terminated filename.
+ *
+ * hash_type is one of:
+ *   MPQFS_HASH_TABLE_INDEX (0x000)
+ *   MPQFS_HASH_NAME_A      (0x100)
+ *   MPQFS_HASH_NAME_B      (0x200)
+ *   MPQFS_HASH_FILE_KEY    (0x300)
+ *
+ * @param str        NUL-terminated string to hash.
+ * @param hash_type  One of the MPQFS_HASH_* constants.
+ * @return           The 32-bit hash value.
+ */
+MPQFS_API uint32_t mpqfs_hash_string(const char *str, uint32_t hash_type);
+
+/**
+ * Length-delimited variant (no NUL terminator required).
+ *
+ * @param str        Pointer to the string data.
+ * @param len        Number of bytes to hash.
+ * @param hash_type  One of the MPQFS_HASH_* constants.
+ * @return           The 32-bit hash value.
+ */
+MPQFS_API uint32_t mpqfs_hash_string_s(const char *str, size_t len,
+                                       uint32_t hash_type);
+
+/**
+ * Encrypt an array of uint32_t values in-place.
+ *
+ * @param data   Pointer to the data to encrypt.
+ * @param count  Number of uint32_t words (NOT bytes).
+ * @param key    Encryption key.
+ */
+MPQFS_API void mpqfs_encrypt_block(uint32_t *data, size_t count, uint32_t key);
+
+/**
+ * Decrypt an array of uint32_t values in-place.
+ *
+ * @param data   Pointer to the data to decrypt.
+ * @param count  Number of uint32_t words (NOT bytes).
+ * @param key    Decryption key.
+ */
+MPQFS_API void mpqfs_decrypt_block(uint32_t *data, size_t count, uint32_t key);
+
+/* Hash-type constants */
+#define MPQFS_HASH_TABLE_INDEX  0x000
+#define MPQFS_HASH_NAME_A       0x100
+#define MPQFS_HASH_NAME_B       0x200
+#define MPQFS_HASH_FILE_KEY     0x300
+
+/* Pre-calculated encryption keys for the block and hash tables.
+ * These are hash("(block table)", MPQFS_HASH_FILE_KEY) and
+ * hash("(hash table)", MPQFS_HASH_FILE_KEY) respectively.       */
+#define MPQFS_BLOCK_TABLE_KEY   3968054179u
+#define MPQFS_HASH_TABLE_KEY    3283040112u
+
+/* -----------------------------------------------------------------------
+ * Convenience: compute a file-hash triple
+ *
+ * DevilutionX pre-computes { hash_table_index, name_a, name_b } for
+ * filenames and stores them for fast lookup.
+ * ----------------------------------------------------------------------- */
+
+/**
+ * Compute the three MPQ hash values for a NUL-terminated filename.
+ *
+ * @param filename   NUL-terminated filename to hash.
+ * @param out_index  Receives hash(filename, MPQFS_HASH_TABLE_INDEX).  May be NULL.
+ * @param out_hash_a Receives hash(filename, MPQFS_HASH_NAME_A).  May be NULL.
+ * @param out_hash_b Receives hash(filename, MPQFS_HASH_NAME_B).  May be NULL.
+ */
+MPQFS_API void mpqfs_file_hash(const char *filename,
+                               uint32_t *out_index,
+                               uint32_t *out_hash_a,
+                               uint32_t *out_hash_b);
+
+/**
+ * Length-delimited variant (no NUL terminator required).
+ *
+ * @param filename   Pointer to the filename data.
+ * @param len        Number of bytes.
+ * @param out_index  Receives hash(filename, MPQFS_HASH_TABLE_INDEX).  May be NULL.
+ * @param out_hash_a Receives hash(filename, MPQFS_HASH_NAME_A).  May be NULL.
+ * @param out_hash_b Receives hash(filename, MPQFS_HASH_NAME_B).  May be NULL.
+ */
+MPQFS_API void mpqfs_file_hash_s(const char *filename, size_t len,
+                                 uint32_t *out_index,
+                                 uint32_t *out_hash_a,
+                                 uint32_t *out_hash_b);
+
+/* -----------------------------------------------------------------------
+ * PKWARE DCL compress / decompress
+ *
+ * These expose the internal PKWARE Data Compression Library (DCL)
+ * implode/explode routines as public API, allowing consumers to
+ * compress and decompress arbitrary data without a separate PKWare
+ * library.
+ * ----------------------------------------------------------------------- */
+
+/**
+ * PKWARE DCL "implode" — compress src into dst.
+ *
+ * On entry *dst_size holds the capacity of dst.
+ * On success *dst_size is updated to the compressed size.
+ *
+ * @param src        Source data to compress.
+ * @param src_size   Size of source data in bytes.
+ * @param dst        Destination buffer.
+ * @param dst_size   In: capacity of dst.  Out: compressed size.
+ * @param dict_bits  Dictionary size: 4 (1024), 5 (2048), or 6 (4096).
+ * @return           0 on success, non-zero on error (output too small, etc.).
+ */
+MPQFS_API int mpqfs_pk_implode(const uint8_t *src, size_t src_size,
+                               uint8_t *dst, size_t *dst_size,
+                               int dict_bits);
+
+/**
+ * PKWARE DCL "explode" — decompress src into dst.
+ *
+ * On entry *dst_size holds the capacity of dst (expected uncompressed size).
+ * On success *dst_size is updated to the actual decompressed size.
+ *
+ * @param src        Compressed source data.
+ * @param src_size   Size of compressed data in bytes.
+ * @param dst        Destination buffer.
+ * @param dst_size   In: capacity of dst.  Out: decompressed size.
+ * @return           0 on success, non-zero on error (corrupt input, etc.).
+ */
+MPQFS_API int mpqfs_pk_explode(const uint8_t *src, size_t src_size,
+                               uint8_t *dst, size_t *dst_size);
 
 #ifdef __cplusplus
 }

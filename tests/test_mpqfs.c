@@ -1392,6 +1392,358 @@ static void test_writer_save_file_layout(void)
  * Interactive mode: open a real MPQ and optionally extract a file
  * ----------------------------------------------------------------------- */
 
+/* -----------------------------------------------------------------------
+ * Work Item 1 — New public API tests
+ * ----------------------------------------------------------------------- */
+
+/* Test: mpqfs_clone on a writer-created archive */
+static void test_clone_roundtrip(void)
+{
+    TEST_BEGIN("clone_roundtrip");
+
+    const char *path = "test_clone.mpq";
+    const uint8_t data[] = "Hello from clone test!";
+
+    /* Create a small archive. */
+    mpqfs_writer_t *w = mpqfs_writer_create(path, 4);
+    ASSERT_NOT_NULL(w);
+    ASSERT_TRUE(mpqfs_writer_add_file(w, "greeting", data, sizeof(data)));
+    ASSERT_TRUE(mpqfs_writer_close(w));
+
+    /* Open it. */
+    mpqfs_archive_t *archive = mpqfs_open(path);
+    ASSERT_NOT_NULL(archive);
+    ASSERT_TRUE(mpqfs_has_file(archive, "greeting"));
+
+    /* Clone it. */
+    mpqfs_archive_t *clone = mpqfs_clone(archive);
+    ASSERT_NOT_NULL(clone);
+
+    /* The clone should see the same files. */
+    ASSERT_TRUE(mpqfs_has_file(clone, "greeting"));
+    ASSERT_EQ_SZ(mpqfs_file_size(clone, "greeting"), sizeof(data));
+
+    /* Read from the clone. */
+    size_t read_size = 0;
+    void *buf = mpqfs_read_file(clone, "greeting", &read_size);
+    ASSERT_NOT_NULL(buf);
+    ASSERT_EQ_SZ(read_size, sizeof(data));
+    ASSERT_TRUE(memcmp(buf, data, sizeof(data)) == 0);
+    free(buf);
+
+    /* Both handles close independently. */
+    mpqfs_close(clone);
+    mpqfs_close(archive);
+    remove(path);
+
+    TEST_END();
+}
+
+/* Test: mpqfs_clone returns NULL for fp-opened archives */
+static void test_clone_fp_fails(void)
+{
+    TEST_BEGIN("clone_fp_fails");
+
+    const char *path = "test_clone_fp.mpq";
+    const uint8_t data[] = "data";
+
+    mpqfs_writer_t *w = mpqfs_writer_create(path, 4);
+    ASSERT_NOT_NULL(w);
+    ASSERT_TRUE(mpqfs_writer_add_file(w, "f", data, sizeof(data)));
+    ASSERT_TRUE(mpqfs_writer_close(w));
+
+    FILE *fp = fopen(path, "rb");
+    ASSERT_NOT_NULL(fp);
+
+    mpqfs_archive_t *archive = mpqfs_open_fp(fp);
+    ASSERT_NOT_NULL(archive);
+
+    /* Clone should fail — no path available. */
+    mpqfs_archive_t *clone = mpqfs_clone(archive);
+    ASSERT_NULL(clone);
+
+    mpqfs_close(archive);
+    fclose(fp);
+    remove(path);
+
+    TEST_END();
+}
+
+/* Test: mpqfs_clone NULL safety */
+static void test_clone_null(void)
+{
+    TEST_BEGIN("clone_null");
+
+    mpqfs_archive_t *clone = mpqfs_clone(NULL);
+    ASSERT_NULL(clone);
+
+    TEST_END();
+}
+
+/* Test: public crypto init is idempotent */
+static void test_public_crypto_init(void)
+{
+    TEST_BEGIN("public_crypto_init");
+
+    mpqfs_crypto_init();
+    uint32_t h1 = mpqfs_hash_string("test", MPQFS_HASH_TABLE_INDEX);
+    mpqfs_crypto_init();
+    uint32_t h2 = mpqfs_hash_string("test", MPQFS_HASH_TABLE_INDEX);
+    ASSERT_EQ_U32(h1, h2);
+
+    TEST_END();
+}
+
+/* Test: mpqfs_hash_string matches internal mpq_hash_string */
+static void test_public_hash_string(void)
+{
+    TEST_BEGIN("public_hash_string");
+
+    mpq_crypto_init();
+    mpqfs_crypto_init();
+
+    /* Compare public and internal for several hash types. */
+    ASSERT_EQ_U32(mpqfs_hash_string("(hash table)", MPQFS_HASH_FILE_KEY),
+                  mpq_hash_string("(hash table)", MPQ_HASH_FILE_KEY));
+
+    ASSERT_EQ_U32(mpqfs_hash_string("(block table)", MPQFS_HASH_FILE_KEY),
+                  mpq_hash_string("(block table)", MPQ_HASH_FILE_KEY));
+
+    ASSERT_EQ_U32(mpqfs_hash_string("levels\\l1data\\l1.min", MPQFS_HASH_TABLE_INDEX),
+                  mpq_hash_string("levels\\l1data\\l1.min", MPQ_HASH_TABLE_INDEX));
+
+    ASSERT_EQ_U32(mpqfs_hash_string("levels\\l1data\\l1.min", MPQFS_HASH_NAME_A),
+                  mpq_hash_string("levels\\l1data\\l1.min", MPQ_HASH_NAME_A));
+
+    ASSERT_EQ_U32(mpqfs_hash_string("levels\\l1data\\l1.min", MPQFS_HASH_NAME_B),
+                  mpq_hash_string("levels\\l1data\\l1.min", MPQ_HASH_NAME_B));
+
+    TEST_END();
+}
+
+/* Test: mpqfs_hash_string_s length-delimited variant */
+static void test_hash_string_s(void)
+{
+    TEST_BEGIN("hash_string_s");
+
+    /* Hash with length should match hash of NUL-terminated equivalent. */
+    const char *full = "hello_world";
+    ASSERT_EQ_U32(mpqfs_hash_string_s(full, 11, MPQFS_HASH_TABLE_INDEX),
+                  mpqfs_hash_string(full, MPQFS_HASH_TABLE_INDEX));
+
+    ASSERT_EQ_U32(mpqfs_hash_string_s(full, 11, MPQFS_HASH_NAME_A),
+                  mpqfs_hash_string(full, MPQFS_HASH_NAME_A));
+
+    ASSERT_EQ_U32(mpqfs_hash_string_s(full, 11, MPQFS_HASH_NAME_B),
+                  mpqfs_hash_string(full, MPQFS_HASH_NAME_B));
+
+    /* Hashing a substring should differ from the full string. */
+    uint32_t sub = mpqfs_hash_string_s(full, 5, MPQFS_HASH_TABLE_INDEX);
+    uint32_t hello_hash = mpqfs_hash_string("hello", MPQFS_HASH_TABLE_INDEX);
+    ASSERT_EQ_U32(sub, hello_hash);
+
+    /* Verify it doesn't read past len — "hello_world" with len=5 == "hello". */
+    const char *with_extra = "helloXXXXX";
+    ASSERT_EQ_U32(mpqfs_hash_string_s(with_extra, 5, MPQFS_HASH_TABLE_INDEX),
+                  hello_hash);
+
+    TEST_END();
+}
+
+/* Test: mpqfs_encrypt_block / mpqfs_decrypt_block roundtrip */
+static void test_public_encrypt_decrypt(void)
+{
+    TEST_BEGIN("public_encrypt_decrypt");
+
+    uint32_t original[8] = { 0x11223344, 0x55667788, 0x99AABBCC, 0xDDEEFF00,
+                             0x12345678, 0x9ABCDEF0, 0x0FEDCBA9, 0x87654321 };
+    uint32_t data[8];
+    memcpy(data, original, sizeof(data));
+
+    uint32_t key = 0xDEADBEEF;
+
+    mpqfs_encrypt_block(data, 8, key);
+    /* Encrypted data should differ from original. */
+    ASSERT_TRUE(memcmp(data, original, sizeof(data)) != 0);
+
+    mpqfs_decrypt_block(data, 8, key);
+    /* Decrypted should match original. */
+    ASSERT_TRUE(memcmp(data, original, sizeof(data)) == 0);
+
+    TEST_END();
+}
+
+/* Test: pre-calculated key constants are correct */
+static void test_key_constants(void)
+{
+    TEST_BEGIN("key_constants");
+
+    mpqfs_crypto_init();
+
+    ASSERT_EQ_U32(MPQFS_BLOCK_TABLE_KEY,
+                  mpqfs_hash_string("(block table)", MPQFS_HASH_FILE_KEY));
+
+    ASSERT_EQ_U32(MPQFS_HASH_TABLE_KEY,
+                  mpqfs_hash_string("(hash table)", MPQFS_HASH_FILE_KEY));
+
+    /* Also verify the numeric values. */
+    ASSERT_EQ_U32(MPQFS_BLOCK_TABLE_KEY, 3968054179u);
+    ASSERT_EQ_U32(MPQFS_HASH_TABLE_KEY,  3283040112u);
+
+    TEST_END();
+}
+
+/* Test: mpqfs_file_hash convenience function */
+static void test_file_hash(void)
+{
+    TEST_BEGIN("file_hash");
+
+    uint32_t idx, ha, hb;
+    mpqfs_file_hash("levels\\l1data\\l1.min", &idx, &ha, &hb);
+
+    ASSERT_EQ_U32(idx, mpqfs_hash_string("levels\\l1data\\l1.min", MPQFS_HASH_TABLE_INDEX));
+    ASSERT_EQ_U32(ha,  mpqfs_hash_string("levels\\l1data\\l1.min", MPQFS_HASH_NAME_A));
+    ASSERT_EQ_U32(hb,  mpqfs_hash_string("levels\\l1data\\l1.min", MPQFS_HASH_NAME_B));
+
+    /* Test with NULL output pointers — should not crash. */
+    mpqfs_file_hash("test", NULL, NULL, NULL);
+    mpqfs_file_hash("test", &idx, NULL, NULL);
+    mpqfs_file_hash("test", NULL, &ha, NULL);
+    mpqfs_file_hash("test", NULL, NULL, &hb);
+
+    TEST_END();
+}
+
+/* Test: mpqfs_file_hash_s length-delimited variant */
+static void test_file_hash_s(void)
+{
+    TEST_BEGIN("file_hash_s");
+
+    uint32_t idx1, ha1, hb1;
+    uint32_t idx2, ha2, hb2;
+
+    const char *name = "test_file";
+    mpqfs_file_hash(name, &idx1, &ha1, &hb1);
+    mpqfs_file_hash_s(name, strlen(name), &idx2, &ha2, &hb2);
+
+    ASSERT_EQ_U32(idx1, idx2);
+    ASSERT_EQ_U32(ha1, ha2);
+    ASSERT_EQ_U32(hb1, hb2);
+
+    /* Verify substring works correctly. */
+    uint32_t sub_idx, sub_ha, sub_hb;
+    uint32_t full_idx, full_ha, full_hb;
+    mpqfs_file_hash_s("hello_world", 5, &sub_idx, &sub_ha, &sub_hb);
+    mpqfs_file_hash("hello", &full_idx, &full_ha, &full_hb);
+
+    ASSERT_EQ_U32(sub_idx, full_idx);
+    ASSERT_EQ_U32(sub_ha, full_ha);
+    ASSERT_EQ_U32(sub_hb, full_hb);
+
+    TEST_END();
+}
+
+/* Test: mpqfs_pk_implode / mpqfs_pk_explode roundtrip */
+static void test_pk_roundtrip(void)
+{
+    TEST_BEGIN("pk_roundtrip");
+
+    /* Create some compressible test data. */
+    uint8_t src[512];
+    for (size_t i = 0; i < sizeof(src); i++)
+        src[i] = (uint8_t)(i & 0x1F);  /* repeating pattern */
+
+    uint8_t compressed[2048];
+    size_t comp_size = sizeof(compressed);
+
+    int rc = mpqfs_pk_implode(src, sizeof(src), compressed, &comp_size, 6);
+    ASSERT_TRUE(rc == 0);
+    ASSERT_TRUE(comp_size > 0);
+    ASSERT_TRUE(comp_size < sizeof(src));  /* should compress well */
+
+    /* Decompress and verify. */
+    uint8_t decompressed[512];
+    size_t decomp_size = sizeof(decompressed);
+
+    rc = mpqfs_pk_explode(compressed, comp_size, decompressed, &decomp_size);
+    ASSERT_TRUE(rc == 0);
+    ASSERT_EQ_SZ(decomp_size, sizeof(src));
+    ASSERT_TRUE(memcmp(decompressed, src, sizeof(src)) == 0);
+
+    TEST_END();
+}
+
+/* Test: mpqfs_pk_implode with different dict_bits values */
+static void test_pk_dict_bits(void)
+{
+    TEST_BEGIN("pk_dict_bits");
+
+    uint8_t src[256];
+    for (size_t i = 0; i < sizeof(src); i++)
+        src[i] = (uint8_t)(i % 10);
+
+    /* Test all valid dict_bits: 4, 5, 6 */
+    for (int bits = 4; bits <= 6; bits++) {
+        uint8_t compressed[1024];
+        size_t comp_size = sizeof(compressed);
+
+        int rc = mpqfs_pk_implode(src, sizeof(src), compressed, &comp_size, bits);
+        ASSERT_TRUE(rc == 0);
+
+        uint8_t decompressed[256];
+        size_t decomp_size = sizeof(decompressed);
+
+        rc = mpqfs_pk_explode(compressed, comp_size, decompressed, &decomp_size);
+        ASSERT_TRUE(rc == 0);
+        ASSERT_EQ_SZ(decomp_size, sizeof(src));
+        ASSERT_TRUE(memcmp(decompressed, src, sizeof(src)) == 0);
+    }
+
+    /* Invalid dict_bits should fail. */
+    uint8_t compressed[1024];
+    size_t comp_size = sizeof(compressed);
+    int rc = mpqfs_pk_implode(src, sizeof(src), compressed, &comp_size, 3);
+    ASSERT_TRUE(rc != 0);
+
+    comp_size = sizeof(compressed);
+    rc = mpqfs_pk_implode(src, sizeof(src), compressed, &comp_size, 7);
+    ASSERT_TRUE(rc != 0);
+
+    TEST_END();
+}
+
+/* Test: mpqfs_pk_implode / mpqfs_pk_explode NULL safety */
+static void test_pk_null_safety(void)
+{
+    TEST_BEGIN("pk_null_safety");
+
+    uint8_t buf[64];
+    size_t sz = sizeof(buf);
+
+    ASSERT_TRUE(mpqfs_pk_implode(NULL, 10, buf, &sz, 6) != 0);
+    ASSERT_TRUE(mpqfs_pk_implode(buf, 10, NULL, &sz, 6) != 0);
+    ASSERT_TRUE(mpqfs_pk_implode(buf, 10, buf, NULL, 6) != 0);
+
+    ASSERT_TRUE(mpqfs_pk_explode(NULL, 10, buf, &sz) != 0);
+    ASSERT_TRUE(mpqfs_pk_explode(buf, 10, NULL, &sz) != 0);
+    ASSERT_TRUE(mpqfs_pk_explode(buf, 10, buf, NULL) != 0);
+
+    TEST_END();
+}
+
+/* Test: hash type constants match internal values */
+static void test_hash_type_constants(void)
+{
+    TEST_BEGIN("hash_type_constants");
+
+    ASSERT_EQ_U32(MPQFS_HASH_TABLE_INDEX, MPQ_HASH_TABLE_INDEX);
+    ASSERT_EQ_U32(MPQFS_HASH_NAME_A,      MPQ_HASH_NAME_A);
+    ASSERT_EQ_U32(MPQFS_HASH_NAME_B,      MPQ_HASH_NAME_B);
+    ASSERT_EQ_U32(MPQFS_HASH_FILE_KEY,    MPQ_HASH_FILE_KEY);
+
+    TEST_END();
+}
+
 static const char *flags_to_str(uint32_t flags, char *buf, size_t buf_size)
 {
     buf[0] = '\0';
@@ -1550,6 +1902,22 @@ int main(int argc, char *argv[])
     test_writer_compression();
     test_writer_save_file_layout();
     test_read_share_save();
+
+    /* Work Item 1 — new public API tests */
+    test_clone_roundtrip();
+    test_clone_fp_fails();
+    test_clone_null();
+    test_public_crypto_init();
+    test_public_hash_string();
+    test_hash_string_s();
+    test_public_encrypt_decrypt();
+    test_key_constants();
+    test_file_hash();
+    test_file_hash_s();
+    test_pk_roundtrip();
+    test_pk_dict_bits();
+    test_pk_null_safety();
+    test_hash_type_constants();
 
     printf("\n");
     printf("Results: %d/%d passed", g_tests_passed, g_tests_run);

@@ -112,6 +112,8 @@ typedef struct mpqfs_archive {
     mpq_hash_entry_t  *hash_table;       /* Decrypted hash table (heap alloc)  */
     mpq_block_entry_t *block_table;      /* Decrypted block table (heap alloc) */
 
+    char              *path;             /* Filesystem path (strdup, may be NULL) */
+
     char               error[256];       /* Last error message                 */
 } mpqfs_archive_t;
 

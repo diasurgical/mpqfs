@@ -9,6 +9,10 @@
  *
  * The correct SDL version is selected at compile time via the
  * MPQFS_SDL_VERSION define (set by CMake).
+ *
+ * Thread-safe variants (mpqfs_open_rwops_threadsafe / mpqfs_open_io_threadsafe)
+ * clone the archive so the returned stream owns an independent FILE* and can
+ * be used from any thread without racing with the original archive's reads.
  */
 
 #include "mpq_platform.h"
@@ -33,6 +37,47 @@
 #include <SDL/SDL_rwops.h>
 #endif
 
+/* -----------------------------------------------------------------------
+ * Internal wrapper: bundles a stream with an optionally-owned archive
+ *
+ * For normal (non-threadsafe) streams, owned_archive is NULL and the
+ * stream's parent archive is NOT closed when the SDL stream closes.
+ *
+ * For threadsafe streams, owned_archive points to a clone created by
+ * mpqfs_clone().  The close callback will close both the stream and
+ * the cloned archive.
+ * ----------------------------------------------------------------------- */
+
+typedef struct mpqfs_sdl_ctx {
+    mpq_stream_t      *stream;          /* Always non-NULL                  */
+    mpqfs_archive_t   *owned_archive;   /* Non-NULL if we own the clone    */
+} mpqfs_sdl_ctx_t;
+
+static mpqfs_sdl_ctx_t *mpqfs_sdl_ctx_new(mpq_stream_t *stream,
+                                           mpqfs_archive_t *owned_archive)
+{
+    mpqfs_sdl_ctx_t *ctx = (mpqfs_sdl_ctx_t *)malloc(sizeof(*ctx));
+    if (!ctx) {
+        mpq_stream_close(stream);
+        if (owned_archive)
+            mpqfs_close(owned_archive);
+        return NULL;
+    }
+    ctx->stream         = stream;
+    ctx->owned_archive  = owned_archive;
+    return ctx;
+}
+
+static void mpqfs_sdl_ctx_free(mpqfs_sdl_ctx_t *ctx)
+{
+    if (!ctx)
+        return;
+    mpq_stream_close(ctx->stream);
+    if (ctx->owned_archive)
+        mpqfs_close(ctx->owned_archive);
+    free(ctx);
+}
+
 /* ======================================================================
  * SDL 3 — SDL_IOStream interface
  * ====================================================================== */
@@ -40,13 +85,13 @@
 
 static Sint64 SDLCALL mpqfs_sdl3_size(void *userdata)
 {
-    mpq_stream_t *stream = (mpq_stream_t *)userdata;
-    return (Sint64)mpq_stream_size(stream);
+    mpqfs_sdl_ctx_t *ctx = (mpqfs_sdl_ctx_t *)userdata;
+    return (Sint64)mpq_stream_size(ctx->stream);
 }
 
 static Sint64 SDLCALL mpqfs_sdl3_seek(void *userdata, Sint64 offset, int whence)
 {
-    mpq_stream_t *stream = (mpq_stream_t *)userdata;
+    mpqfs_sdl_ctx_t *ctx = (mpqfs_sdl_ctx_t *)userdata;
 
     int w;
     switch (whence) {
@@ -57,20 +102,20 @@ static Sint64 SDLCALL mpqfs_sdl3_seek(void *userdata, Sint64 offset, int whence)
         return -1;
     }
 
-    int64_t pos = mpq_stream_seek(stream, (int64_t)offset, w);
+    int64_t pos = mpq_stream_seek(ctx->stream, (int64_t)offset, w);
     return (Sint64)pos;
 }
 
 static size_t SDLCALL mpqfs_sdl3_read(void *userdata, void *ptr, size_t size, SDL_IOStatus *status)
 {
-    mpq_stream_t *stream = (mpq_stream_t *)userdata;
+    mpqfs_sdl_ctx_t *ctx = (mpqfs_sdl_ctx_t *)userdata;
 
     if (size == 0) {
         if (status) *status = SDL_IO_STATUS_READY;
         return 0;
     }
 
-    size_t n = mpq_stream_read(stream, ptr, size);
+    size_t n = mpq_stream_read(ctx->stream, ptr, size);
     if (n == (size_t)-1) {
         if (status) *status = SDL_IO_STATUS_ERROR;
         return 0;
@@ -96,9 +141,31 @@ static size_t SDLCALL mpqfs_sdl3_write(void *userdata, const void *ptr, size_t s
 
 static bool SDLCALL mpqfs_sdl3_close(void *userdata)
 {
-    mpq_stream_t *stream = (mpq_stream_t *)userdata;
-    mpq_stream_close(stream);
+    mpqfs_sdl_ctx_t *ctx = (mpqfs_sdl_ctx_t *)userdata;
+    mpqfs_sdl_ctx_free(ctx);
     return true;
+}
+
+/* Internal helper: create an SDL 3 IOStream from a ctx (takes ownership). */
+static SDL_IOStream *mpqfs_sdl3_create_io(mpqfs_sdl_ctx_t *ctx,
+                                           mpqfs_archive_t *err_archive)
+{
+    SDL_IOStreamInterface iface;
+    SDL_INIT_INTERFACE(&iface);
+    iface.size  = mpqfs_sdl3_size;
+    iface.seek  = mpqfs_sdl3_seek;
+    iface.read  = mpqfs_sdl3_read;
+    iface.write = mpqfs_sdl3_write;
+    iface.close = mpqfs_sdl3_close;
+
+    SDL_IOStream *io = SDL_OpenIO(&iface, ctx);
+    if (!io) {
+        mpq_set_error(err_archive, "SDL_OpenIO failed: %s", SDL_GetError());
+        mpqfs_sdl_ctx_free(ctx);
+        return NULL;
+    }
+
+    return io;
 }
 
 SDL_IOStream *mpqfs_open_io(mpqfs_archive_t *archive, const char *filename)
@@ -112,27 +179,50 @@ SDL_IOStream *mpqfs_open_io(mpqfs_archive_t *archive, const char *filename)
         return NULL;
     }
 
-    mpq_stream_t *stream = mpq_stream_open(archive, bi);
+    mpq_stream_t *stream = mpq_stream_open_named(archive, bi, filename);
     if (!stream)
         return NULL;
 
-    SDL_IOStreamInterface iface;
-    SDL_INIT_INTERFACE(&iface);
-    iface.size  = mpqfs_sdl3_size;
-    iface.seek  = mpqfs_sdl3_seek;
-    iface.read  = mpqfs_sdl3_read;
-    iface.write = mpqfs_sdl3_write;
-    iface.close = mpqfs_sdl3_close;
-
-    SDL_IOStream *io = SDL_OpenIO(&iface, stream);
-    if (!io) {
-        mpq_stream_close(stream);
-        mpq_set_error(archive, "mpqfs_open_io: SDL_OpenIO failed: %s",
-                      SDL_GetError());
+    mpqfs_sdl_ctx_t *ctx = mpqfs_sdl_ctx_new(stream, NULL);
+    if (!ctx) {
+        mpq_set_error(archive, "mpqfs_open_io: out of memory");
         return NULL;
     }
 
-    return io;
+    return mpqfs_sdl3_create_io(ctx, archive);
+}
+
+SDL_IOStream *mpqfs_open_io_threadsafe(mpqfs_archive_t *archive,
+                                       const char *filename)
+{
+    if (!archive || !filename)
+        return NULL;
+
+    mpqfs_archive_t *clone = mpqfs_clone(archive);
+    if (!clone)
+        return NULL;  /* error already set by mpqfs_clone */
+
+    uint32_t bi = mpq_lookup_file(clone, filename);
+    if (bi == UINT32_MAX) {
+        mpq_set_error(archive, "mpqfs_open_io_threadsafe: file '%s' not found",
+                      filename);
+        mpqfs_close(clone);
+        return NULL;
+    }
+
+    mpq_stream_t *stream = mpq_stream_open_named(clone, bi, filename);
+    if (!stream) {
+        mpqfs_close(clone);
+        return NULL;
+    }
+
+    mpqfs_sdl_ctx_t *ctx = mpqfs_sdl_ctx_new(stream, clone);
+    if (!ctx) {
+        mpq_set_error(archive, "mpqfs_open_io_threadsafe: out of memory");
+        return NULL;
+    }
+
+    return mpqfs_sdl3_create_io(ctx, archive);
 }
 
 /* ======================================================================
@@ -140,15 +230,15 @@ SDL_IOStream *mpqfs_open_io(mpqfs_archive_t *archive, const char *filename)
  * ====================================================================== */
 #elif MPQFS_SDL_VERSION == 2
 
-static Sint64 SDLCALL mpqfs_sdl2_size(SDL_RWops *ctx)
+static Sint64 SDLCALL mpqfs_sdl2_size(SDL_RWops *rw)
 {
-    mpq_stream_t *stream = (mpq_stream_t *)ctx->hidden.unknown.data1;
-    return (Sint64)mpq_stream_size(stream);
+    mpqfs_sdl_ctx_t *ctx = (mpqfs_sdl_ctx_t *)rw->hidden.unknown.data1;
+    return (Sint64)mpq_stream_size(ctx->stream);
 }
 
-static Sint64 SDLCALL mpqfs_sdl2_seek(SDL_RWops *ctx, Sint64 offset, int whence)
+static Sint64 SDLCALL mpqfs_sdl2_seek(SDL_RWops *rw, Sint64 offset, int whence)
 {
-    mpq_stream_t *stream = (mpq_stream_t *)ctx->hidden.unknown.data1;
+    mpqfs_sdl_ctx_t *ctx = (mpqfs_sdl_ctx_t *)rw->hidden.unknown.data1;
 
     int w;
     switch (whence) {
@@ -159,20 +249,20 @@ static Sint64 SDLCALL mpqfs_sdl2_seek(SDL_RWops *ctx, Sint64 offset, int whence)
         return -1;
     }
 
-    int64_t pos = mpq_stream_seek(stream, (int64_t)offset, w);
+    int64_t pos = mpq_stream_seek(ctx->stream, (int64_t)offset, w);
     return (Sint64)pos;
 }
 
-static size_t SDLCALL mpqfs_sdl2_read(SDL_RWops *ctx, void *ptr,
+static size_t SDLCALL mpqfs_sdl2_read(SDL_RWops *rw, void *ptr,
                                        size_t size, size_t maxnum)
 {
-    mpq_stream_t *stream = (mpq_stream_t *)ctx->hidden.unknown.data1;
+    mpqfs_sdl_ctx_t *ctx = (mpqfs_sdl_ctx_t *)rw->hidden.unknown.data1;
 
     size_t total = size * maxnum;
     if (total == 0)
         return 0;
 
-    size_t n = mpq_stream_read(stream, ptr, total);
+    size_t n = mpq_stream_read(ctx->stream, ptr, total);
     if (n == (size_t)-1)
         return 0;
 
@@ -180,10 +270,10 @@ static size_t SDLCALL mpqfs_sdl2_read(SDL_RWops *ctx, void *ptr,
     return n / size;
 }
 
-static size_t SDLCALL mpqfs_sdl2_write(SDL_RWops *ctx, const void *ptr,
+static size_t SDLCALL mpqfs_sdl2_write(SDL_RWops *rw, const void *ptr,
                                         size_t size, size_t num)
 {
-    MPQFS_UNUSED(ctx);
+    MPQFS_UNUSED(rw);
     MPQFS_UNUSED(ptr);
     MPQFS_UNUSED(size);
     MPQFS_UNUSED(num);
@@ -191,14 +281,36 @@ static size_t SDLCALL mpqfs_sdl2_write(SDL_RWops *ctx, const void *ptr,
     return 0;
 }
 
-static int SDLCALL mpqfs_sdl2_close(SDL_RWops *ctx)
+static int SDLCALL mpqfs_sdl2_close(SDL_RWops *rw)
 {
-    if (ctx) {
-        mpq_stream_t *stream = (mpq_stream_t *)ctx->hidden.unknown.data1;
-        mpq_stream_close(stream);
-        SDL_FreeRW(ctx);
+    if (rw) {
+        mpqfs_sdl_ctx_t *ctx = (mpqfs_sdl_ctx_t *)rw->hidden.unknown.data1;
+        mpqfs_sdl_ctx_free(ctx);
+        SDL_FreeRW(rw);
     }
     return 0;
+}
+
+/* Internal helper: create an SDL 2 RWops from a ctx (takes ownership). */
+static SDL_RWops *mpqfs_sdl2_create_rwops(mpqfs_sdl_ctx_t *ctx,
+                                           mpqfs_archive_t *err_archive)
+{
+    SDL_RWops *rw = SDL_AllocRW();
+    if (!rw) {
+        mpq_set_error(err_archive, "SDL_AllocRW failed");
+        mpqfs_sdl_ctx_free(ctx);
+        return NULL;
+    }
+
+    rw->type  = SDL_RWOPS_UNKNOWN;
+    rw->size  = mpqfs_sdl2_size;
+    rw->seek  = mpqfs_sdl2_seek;
+    rw->read  = mpqfs_sdl2_read;
+    rw->write = mpqfs_sdl2_write;
+    rw->close = mpqfs_sdl2_close;
+    rw->hidden.unknown.data1 = ctx;
+
+    return rw;
 }
 
 SDL_RWops *mpqfs_open_rwops(mpqfs_archive_t *archive, const char *filename)
@@ -212,26 +324,50 @@ SDL_RWops *mpqfs_open_rwops(mpqfs_archive_t *archive, const char *filename)
         return NULL;
     }
 
-    mpq_stream_t *stream = mpq_stream_open(archive, bi);
+    mpq_stream_t *stream = mpq_stream_open_named(archive, bi, filename);
     if (!stream)
         return NULL;
 
-    SDL_RWops *rw = SDL_AllocRW();
-    if (!rw) {
-        mpq_stream_close(stream);
-        mpq_set_error(archive, "mpqfs_open_rwops: SDL_AllocRW failed");
+    mpqfs_sdl_ctx_t *ctx = mpqfs_sdl_ctx_new(stream, NULL);
+    if (!ctx) {
+        mpq_set_error(archive, "mpqfs_open_rwops: out of memory");
         return NULL;
     }
 
-    rw->type  = SDL_RWOPS_UNKNOWN;
-    rw->size  = mpqfs_sdl2_size;
-    rw->seek  = mpqfs_sdl2_seek;
-    rw->read  = mpqfs_sdl2_read;
-    rw->write = mpqfs_sdl2_write;
-    rw->close = mpqfs_sdl2_close;
-    rw->hidden.unknown.data1 = stream;
+    return mpqfs_sdl2_create_rwops(ctx, archive);
+}
 
-    return rw;
+SDL_RWops *mpqfs_open_rwops_threadsafe(mpqfs_archive_t *archive,
+                                       const char *filename)
+{
+    if (!archive || !filename)
+        return NULL;
+
+    mpqfs_archive_t *clone = mpqfs_clone(archive);
+    if (!clone)
+        return NULL;  /* error already set by mpqfs_clone */
+
+    uint32_t bi = mpq_lookup_file(clone, filename);
+    if (bi == UINT32_MAX) {
+        mpq_set_error(archive, "mpqfs_open_rwops_threadsafe: file '%s' not found",
+                      filename);
+        mpqfs_close(clone);
+        return NULL;
+    }
+
+    mpq_stream_t *stream = mpq_stream_open_named(clone, bi, filename);
+    if (!stream) {
+        mpqfs_close(clone);
+        return NULL;
+    }
+
+    mpqfs_sdl_ctx_t *ctx = mpqfs_sdl_ctx_new(stream, clone);
+    if (!ctx) {
+        mpq_set_error(archive, "mpqfs_open_rwops_threadsafe: out of memory");
+        return NULL;
+    }
+
+    return mpqfs_sdl2_create_rwops(ctx, archive);
 }
 
 /* ======================================================================
@@ -245,48 +381,68 @@ SDL_RWops *mpqfs_open_rwops(mpqfs_archive_t *archive, const char *filename)
  * ====================================================================== */
 #elif MPQFS_SDL_VERSION == 1
 
-static int SDLCALL mpqfs_sdl1_seek(SDL_RWops *ctx, int offset, int whence)
+static int SDLCALL mpqfs_sdl1_seek(SDL_RWops *rw, int offset, int whence)
 {
-    mpq_stream_t *stream = (mpq_stream_t *)ctx->hidden.unknown.data1;
+    mpqfs_sdl_ctx_t *ctx = (mpqfs_sdl_ctx_t *)rw->hidden.unknown.data1;
 
-    int64_t pos = mpq_stream_seek(stream, (int64_t)offset, whence);
+    int64_t pos = mpq_stream_seek(ctx->stream, (int64_t)offset, whence);
     return (int)pos;
 }
 
-static int SDLCALL mpqfs_sdl1_read(SDL_RWops *ctx, void *ptr,
+static int SDLCALL mpqfs_sdl1_read(SDL_RWops *rw, void *ptr,
                                     int size, int maxnum)
 {
-    mpq_stream_t *stream = (mpq_stream_t *)ctx->hidden.unknown.data1;
+    mpqfs_sdl_ctx_t *ctx = (mpqfs_sdl_ctx_t *)rw->hidden.unknown.data1;
 
     size_t total = (size_t)size * (size_t)maxnum;
     if (total == 0)
         return 0;
 
-    size_t n = mpq_stream_read(stream, ptr, total);
+    size_t n = mpq_stream_read(ctx->stream, ptr, total);
     if (n == (size_t)-1)
         return -1;
 
     return (int)(n / (size_t)size);
 }
 
-static int SDLCALL mpqfs_sdl1_write(SDL_RWops *ctx, const void *ptr,
+static int SDLCALL mpqfs_sdl1_write(SDL_RWops *rw, const void *ptr,
                                      int size, int num)
 {
-    MPQFS_UNUSED(ctx);
+    MPQFS_UNUSED(rw);
     MPQFS_UNUSED(ptr);
     MPQFS_UNUSED(size);
     MPQFS_UNUSED(num);
     return -1;
 }
 
-static int SDLCALL mpqfs_sdl1_close(SDL_RWops *ctx)
+static int SDLCALL mpqfs_sdl1_close(SDL_RWops *rw)
 {
-    if (ctx) {
-        mpq_stream_t *stream = (mpq_stream_t *)ctx->hidden.unknown.data1;
-        mpq_stream_close(stream);
-        SDL_FreeRW(ctx);
+    if (rw) {
+        mpqfs_sdl_ctx_t *ctx = (mpqfs_sdl_ctx_t *)rw->hidden.unknown.data1;
+        mpqfs_sdl_ctx_free(ctx);
+        SDL_FreeRW(rw);
     }
     return 0;
+}
+
+/* Internal helper: create an SDL 1.2 RWops from a ctx (takes ownership). */
+static SDL_RWops *mpqfs_sdl1_create_rwops(mpqfs_sdl_ctx_t *ctx,
+                                           mpqfs_archive_t *err_archive)
+{
+    SDL_RWops *rw = SDL_AllocRW();
+    if (!rw) {
+        mpq_set_error(err_archive, "SDL_AllocRW failed");
+        mpqfs_sdl_ctx_free(ctx);
+        return NULL;
+    }
+
+    rw->seek  = mpqfs_sdl1_seek;
+    rw->read  = mpqfs_sdl1_read;
+    rw->write = mpqfs_sdl1_write;
+    rw->close = mpqfs_sdl1_close;
+    rw->hidden.unknown.data1 = ctx;
+
+    return rw;
 }
 
 SDL_RWops *mpqfs_open_rwops(mpqfs_archive_t *archive, const char *filename)
@@ -300,24 +456,50 @@ SDL_RWops *mpqfs_open_rwops(mpqfs_archive_t *archive, const char *filename)
         return NULL;
     }
 
-    mpq_stream_t *stream = mpq_stream_open(archive, bi);
+    mpq_stream_t *stream = mpq_stream_open_named(archive, bi, filename);
     if (!stream)
         return NULL;
 
-    SDL_RWops *rw = SDL_AllocRW();
-    if (!rw) {
-        mpq_stream_close(stream);
-        mpq_set_error(archive, "mpqfs_open_rwops: SDL_AllocRW failed");
+    mpqfs_sdl_ctx_t *ctx = mpqfs_sdl_ctx_new(stream, NULL);
+    if (!ctx) {
+        mpq_set_error(archive, "mpqfs_open_rwops: out of memory");
         return NULL;
     }
 
-    rw->seek  = mpqfs_sdl1_seek;
-    rw->read  = mpqfs_sdl1_read;
-    rw->write = mpqfs_sdl1_write;
-    rw->close = mpqfs_sdl1_close;
-    rw->hidden.unknown.data1 = stream;
+    return mpqfs_sdl1_create_rwops(ctx, archive);
+}
 
-    return rw;
+SDL_RWops *mpqfs_open_rwops_threadsafe(mpqfs_archive_t *archive,
+                                       const char *filename)
+{
+    if (!archive || !filename)
+        return NULL;
+
+    mpqfs_archive_t *clone = mpqfs_clone(archive);
+    if (!clone)
+        return NULL;  /* error already set by mpqfs_clone */
+
+    uint32_t bi = mpq_lookup_file(clone, filename);
+    if (bi == UINT32_MAX) {
+        mpq_set_error(archive, "mpqfs_open_rwops_threadsafe: file '%s' not found",
+                      filename);
+        mpqfs_close(clone);
+        return NULL;
+    }
+
+    mpq_stream_t *stream = mpq_stream_open_named(clone, bi, filename);
+    if (!stream) {
+        mpqfs_close(clone);
+        return NULL;
+    }
+
+    mpqfs_sdl_ctx_t *ctx = mpqfs_sdl_ctx_new(stream, clone);
+    if (!ctx) {
+        mpq_set_error(archive, "mpqfs_open_rwops_threadsafe: out of memory");
+        return NULL;
+    }
+
+    return mpqfs_sdl1_create_rwops(ctx, archive);
 }
 
 #endif /* MPQFS_SDL_VERSION */

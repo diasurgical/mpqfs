@@ -4,10 +4,14 @@
  *
  * MPQ cryptographic primitives: encryption table, string hashing,
  * block encryption/decryption, and file key derivation.
+ *
+ * Also contains the public API wrappers (mpqfs_crypto_init, mpqfs_hash_string,
+ * mpqfs_encrypt_block, etc.) declared in <mpqfs/mpqfs.h>.
  */
 
 #include "mpq_platform.h"
 #include "mpq_crypto.h"
+#include "../include/mpqfs/mpqfs.h"
 
 #include <string.h>
 
@@ -173,4 +177,79 @@ uint32_t mpq_file_key(const char *path, uint32_t block_offset,
     }
 
     return key;
+}
+
+/* -----------------------------------------------------------------------
+ * Public API wrappers
+ *
+ * These are declared in <mpqfs/mpqfs.h> and provide the public-facing
+ * crypto primitives.  Each ensures the crypto table is initialised
+ * before proceeding.
+ * ----------------------------------------------------------------------- */
+
+void mpqfs_crypto_init(void)
+{
+    mpq_crypto_init();
+}
+
+uint32_t mpqfs_hash_string(const char *str, uint32_t hash_type)
+{
+    mpq_crypto_init();
+    return mpq_hash_string(str, hash_type);
+}
+
+uint32_t mpqfs_hash_string_s(const char *str, size_t len, uint32_t hash_type)
+{
+    mpq_crypto_init();
+
+    uint32_t seed1 = 0x7FED7FED;
+    uint32_t seed2 = 0xEEEEEEEE;
+
+    for (size_t i = 0; i < len; i++) {
+        uint32_t ch = mpq_ascii_to_upper[(unsigned char)str[i]];
+        seed1 = g_crypt_table[hash_type + ch] ^ (seed1 + seed2);
+        seed2 = ch + seed1 + seed2 + (seed2 << 5) + 3;
+    }
+
+    return seed1;
+}
+
+void mpqfs_encrypt_block(uint32_t *data, size_t count, uint32_t key)
+{
+    mpq_crypto_init();
+    mpq_encrypt_block(data, count, key);
+}
+
+void mpqfs_decrypt_block(uint32_t *data, size_t count, uint32_t key)
+{
+    mpq_crypto_init();
+    mpq_decrypt_block(data, count, key);
+}
+
+void mpqfs_file_hash(const char *filename,
+                     uint32_t *out_index,
+                     uint32_t *out_hash_a,
+                     uint32_t *out_hash_b)
+{
+    mpq_crypto_init();
+    if (out_index)
+        *out_index  = mpq_hash_string(filename, MPQ_HASH_TABLE_INDEX);
+    if (out_hash_a)
+        *out_hash_a = mpq_hash_string(filename, MPQ_HASH_NAME_A);
+    if (out_hash_b)
+        *out_hash_b = mpq_hash_string(filename, MPQ_HASH_NAME_B);
+}
+
+void mpqfs_file_hash_s(const char *filename, size_t len,
+                       uint32_t *out_index,
+                       uint32_t *out_hash_a,
+                       uint32_t *out_hash_b)
+{
+    mpq_crypto_init();
+    if (out_index)
+        *out_index  = mpqfs_hash_string_s(filename, len, MPQFS_HASH_TABLE_INDEX);
+    if (out_hash_a)
+        *out_hash_a = mpqfs_hash_string_s(filename, len, MPQFS_HASH_NAME_A);
+    if (out_hash_b)
+        *out_hash_b = mpqfs_hash_string_s(filename, len, MPQFS_HASH_NAME_B);
 }

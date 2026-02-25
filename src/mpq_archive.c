@@ -18,6 +18,22 @@
 
 #include <stdlib.h>
 #include <string.h>
+
+/* Forward declaration — needed because mpqfs_open() references mpqfs_close()
+ * for cleanup on error, but mpqfs_close() is defined further below. */
+void mpqfs_close(mpqfs_archive_t *archive);
+
+/* Portable strdup — avoids reliance on POSIX strdup() which may not be
+ * declared in strict C99 mode on all toolchains. */
+static char *mpqfs_strdup(const char *s)
+{
+    if (!s) return NULL;
+    size_t len = strlen(s) + 1;
+    char *copy = (char *)malloc(len);
+    if (copy)
+        memcpy(copy, s, len);
+    return copy;
+}
 #include <stdarg.h>
 #include <errno.h>
 
@@ -332,7 +348,16 @@ mpqfs_archive_t *mpqfs_open(const char *path)
         return NULL;
     }
 
-    return mpq_init_archive(fp, 1, "mpqfs_open");
+    mpqfs_archive_t *archive = mpq_init_archive(fp, 1, "mpqfs_open");
+    if (archive) {
+        archive->path = mpqfs_strdup(path);
+        if (!archive->path) {
+            mpq_set_error(archive, "mpqfs_open: out of memory for path");
+            mpqfs_close(archive);
+            return NULL;
+        }
+    }
+    return archive;
 }
 
 #if MPQFS_HAS_FDOPEN
@@ -377,11 +402,28 @@ void mpqfs_close(mpqfs_archive_t *archive)
 
     free(archive->block_table);
     free(archive->hash_table);
+    free(archive->path);
 
     if (archive->fp && archive->owns_fd)
         fclose(archive->fp);
 
     free(archive);
+}
+
+mpqfs_archive_t *mpqfs_clone(const mpqfs_archive_t *archive)
+{
+    if (!archive) {
+        mpq_set_error(NULL, "mpqfs_clone: archive is NULL");
+        return NULL;
+    }
+
+    if (!archive->path) {
+        mpq_set_error(NULL, "mpqfs_clone: cannot clone an archive opened "
+                      "via mpqfs_open_fp (no path available)");
+        return NULL;
+    }
+
+    return mpqfs_open(archive->path);
 }
 
 /* -----------------------------------------------------------------------
