@@ -32,10 +32,10 @@
 #if MPQFS_SDL_VERSION == 3
 #include <SDL3/SDL.h>
 #elif MPQFS_SDL_VERSION == 2
-#include <SDL2/SDL.h>
+#include <SDL.h>
 #else
-#include <SDL/SDL.h>
-#include <SDL/SDL_rwops.h>
+#include <SDL.h>
+#include <SDL_rwops.h>
 #endif
 
 /* -----------------------------------------------------------------------

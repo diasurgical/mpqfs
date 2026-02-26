@@ -61,11 +61,11 @@
 #   include <SDL3/SDL_iostream.h>
 #   include <SDL3/SDL.h>
 #elif defined(MPQFS_USE_SDL2) && MPQFS_USE_SDL2
-#   include <SDL2/SDL_rwops.h>
-#   include <SDL2/SDL.h>
+#   include <SDL_rwops.h>
+#   include <SDL.h>
 #elif defined(MPQFS_USE_SDL1) && MPQFS_USE_SDL1
-#   include <SDL/SDL_rwops.h>
-#   include <SDL/SDL.h>
+#   include <SDL_rwops.h>
+#   include <SDL.h>
 #endif
 
 /* -----------------------------------------------------------------------
