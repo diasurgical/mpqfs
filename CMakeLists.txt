@@ -174,6 +174,13 @@ if(MPQFS_BUILD_TESTS)
 endif()
 
 # --- Install ---
+#
+# Install rules are only useful when mpqfs is the top-level project.
+# When embedded via add_subdirectory / FetchContent, the install export
+# would fail if mpqfs's private dependencies (zlib, bzip2, SDL) are
+# also built from source and not part of any export set.
+
+if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
@@ -213,3 +220,5 @@ install(FILES
     "${CMAKE_CURRENT_BINARY_DIR}/mpqfsConfigVersion.cmake"
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/mpqfs
 )
+
+endif()
