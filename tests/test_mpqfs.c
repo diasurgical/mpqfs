@@ -342,16 +342,11 @@ static void test_encrypt_ciphertext_matches_stormlib(void)
         0x00000000, 0xFFFFFFFF, 0x01010101, 0x80808080
     };
 
-    /* Expected ciphertext from StormLib reference.
-     *
-     * The critical difference vs. a buggy implementation is in data[1]
-     * onwards: the seed update in the encrypt loop must use the
-     * *ciphertext* value (data[i] after XOR), not the plaintext.
-     * A plaintext-based seed would produce 0x77182D80 at index 1
-     * instead of the correct 0x6710165B. */
+    /* Expected ciphertext produced by the standard MPQ encrypt algorithm
+     * (plaintext-feedback seed). */
     uint32_t expected[8] = {
-        0xE3E5D964, 0x6710165B, 0xADD2848A, 0x4966CCA2,
-        0x5C84112B, 0xCFD29B4D, 0xEBB45C2F, 0x3640781B
+        0xE3E5D964, 0x624828CE, 0x65AE5838, 0x7CEA57BE,
+        0x0FE579F5, 0x0CC82A6E, 0x3E3A4F9E, 0x31D13C7E
     };
 
     mpq_encrypt_block(data, 8, bt_key);

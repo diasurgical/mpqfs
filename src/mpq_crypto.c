@@ -139,8 +139,8 @@ void mpq_encrypt_block(uint32_t *data, size_t count, uint32_t key)
     for (size_t i = 0; i < count; i++) {
         seed += g_crypt_table[MPQ_HASH_KEY2_MIX + (key & 0xFF)];
 
-        uint32_t ch  = data[i] ^ (key + seed);
-        data[i] = ch;
+        uint32_t ch  = data[i];
+        data[i] = ch ^ (key + seed);
 
         key  = ((~key << 0x15) + 0x11111111) | (key >> 0x0B);
         seed = ch + seed + (seed << 5) + 3;
