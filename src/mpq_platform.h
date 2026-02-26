@@ -78,11 +78,13 @@
  * ----------------------------------------------------------------------- */
 
 #if defined(__PS2__) || defined(_3DS) || defined(__vita__) \
-    || defined(__NX__) /* Nintendo Switch (devkitPro) */
+    || defined(__NX__) /* Nintendo Switch (devkitPro) */ \
+    || defined(NXDK) /* original Xbox (nxdk) */ \
+    || defined(__UWP__) /* Xbox UWP / Gaming Desktop */
    /* Console SDKs generally do not provide POSIX fd operations. */
 #  define MPQFS_HAS_FDOPEN 0
 #elif defined(_MSC_VER)
-   /* MSVC provides _fdopen(). */
+   /* MSVC desktop provides _fdopen(). */
 #  define MPQFS_HAS_FDOPEN 1
 #  ifndef _CRT_DECLARE_NONSTD
 #    include <io.h>

@@ -40,7 +40,9 @@
 
 #ifndef MPQFS_HAS_FDOPEN
 #  if defined(__PS2__) || defined(_3DS) || defined(__vita__) \
-      || defined(__NX__) /* Nintendo Switch (devkitPro) */
+      || defined(__NX__) /* Nintendo Switch (devkitPro) */ \
+      || defined(NXDK) /* original Xbox (nxdk) */ \
+      || defined(__UWP__) /* Xbox UWP / Gaming Desktop */
 #    define MPQFS_HAS_FDOPEN 0
 #  elif defined(_MSC_VER) || defined(__DJGPP__) || defined(__unix__) \
         || defined(__APPLE__) || defined(__linux__) || defined(__ANDROID__) \
