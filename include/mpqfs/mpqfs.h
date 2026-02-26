@@ -540,7 +540,11 @@ MPQFS_API uint32_t mpqfs_hash_string_s(const char *str, size_t len,
 /**
  * Encrypt an array of uint32_t values in-place.
  *
- * @param data   Pointer to the data to encrypt.
+ * Input data is in host byte order.  On big-endian systems the result
+ * is byte-swapped to little-endian, ready for writing to an MPQ file.
+ * On little-endian systems this is a no-op since host == LE.
+ *
+ * @param data   Pointer to the data to encrypt (host order in, LE out).
  * @param count  Number of uint32_t words (NOT bytes).
  * @param key    Encryption key.
  */
@@ -549,7 +553,11 @@ MPQFS_API void mpqfs_encrypt_block(uint32_t *data, size_t count, uint32_t key);
 /**
  * Decrypt an array of uint32_t values in-place.
  *
- * @param data   Pointer to the data to decrypt.
+ * Input data is little-endian (as read from an MPQ file).  On big-endian
+ * systems the data is byte-swapped to host order before decryption.
+ * On little-endian systems this is a no-op since host == LE.
+ *
+ * @param data   Pointer to the data to decrypt (LE in, host order out).
  * @param count  Number of uint32_t words (NOT bytes).
  * @param key    Decryption key.
  */

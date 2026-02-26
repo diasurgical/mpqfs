@@ -218,11 +218,23 @@ void mpqfs_encrypt_block(uint32_t *data, size_t count, uint32_t key)
 {
     mpq_crypto_init();
     mpq_encrypt_block(data, count, key);
+#if MPQFS_BIG_ENDIAN
+    /* The caller passes host-order data.  After encryption the result
+     * must be in little-endian for writing to the MPQ file on disk. */
+    for (size_t i = 0; i < count; i++)
+        data[i] = mpqfs_le32(data[i]);
+#endif
 }
 
 void mpqfs_decrypt_block(uint32_t *data, size_t count, uint32_t key)
 {
     mpq_crypto_init();
+#if MPQFS_BIG_ENDIAN
+    /* The caller passes little-endian on-disk data.  Swap to host order
+     * before decryption so the XOR arithmetic is correct. */
+    for (size_t i = 0; i < count; i++)
+        data[i] = mpqfs_le32(data[i]);
+#endif
     mpq_decrypt_block(data, count, key);
 }
 
