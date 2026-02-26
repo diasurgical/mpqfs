@@ -119,7 +119,13 @@ target_include_directories(mpqfs
 target_compile_definitions(mpqfs PRIVATE MPQFS_SDL_VERSION=${_MPQFS_SDL_VER})
 
 # zlib and bzip2 linkage
-target_link_libraries(mpqfs PRIVATE ZLIB::ZLIB BZip2::BZip2)
+# When mpqfs is built as a static library (the default), consumers need
+# the transitive zlib/bzip2 dependency to resolve symbols at link time.
+if(MPQFS_BUILD_SHARED)
+    target_link_libraries(mpqfs PRIVATE ZLIB::ZLIB BZip2::BZip2)
+else()
+    target_link_libraries(mpqfs PUBLIC ZLIB::ZLIB BZip2::BZip2)
+endif()
 
 # SDL linkage
 if(_MPQFS_SDL_VER EQUAL 3)
