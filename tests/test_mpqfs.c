@@ -314,6 +314,65 @@ static void test_encrypt_known_ciphertext(void)
     TEST_END();
 }
 
+
+/* -----------------------------------------------------------------------
+ * Test: encrypt produces exact ciphertext matching StormLib
+ *
+ * This catches the bug where mpq_encrypt_block fed the plaintext value
+ * (instead of the ciphertext) back into the seed update.  A simple
+ * encrypt→decrypt round-trip does NOT catch this because the same
+ * wrong seed evolution is applied in both directions, so they cancel
+ * out.  Verifying against known-good ciphertext is the only way.
+ *
+ * The expected values were generated with StormLib's EncryptMpqBlock which
+ * is the reference MPQ implementation.
+ * ----------------------------------------------------------------------- */
+
+static void test_encrypt_ciphertext_matches_stormlib(void)
+{
+    TEST_BEGIN("encrypt_ciphertext_matches_stormlib");
+
+    mpq_crypto_init();
+
+    uint32_t bt_key = mpq_hash_string("(block table)", MPQ_HASH_FILE_KEY);
+    ASSERT_EQ_U32(bt_key, 0xEC83B3A3);
+
+    uint32_t data[8] = {
+        0xDEADBEEF, 0xCAFEBABE, 0x12345678, 0x9ABCDEF0,
+        0x00000000, 0xFFFFFFFF, 0x01010101, 0x80808080
+    };
+
+    /* Expected ciphertext from StormLib reference.
+     *
+     * The critical difference vs. a buggy implementation is in data[1]
+     * onwards: the seed update in the encrypt loop must use the
+     * *ciphertext* value (data[i] after XOR), not the plaintext.
+     * A plaintext-based seed would produce 0x77182D80 at index 1
+     * instead of the correct 0x6710165B. */
+    uint32_t expected[8] = {
+        0xE3E5D964, 0x6710165B, 0xADD2848A, 0x4966CCA2,
+        0x5C84112B, 0xCFD29B4D, 0xEBB45C2F, 0x3640781B
+    };
+
+    mpq_encrypt_block(data, 8, bt_key);
+
+    for (int i = 0; i < 8; i++) {
+        ASSERT_EQ_U32(data[i], expected[i]);
+    }
+
+    /* Verify decrypt recovers the original. */
+    uint32_t original[8] = {
+        0xDEADBEEF, 0xCAFEBABE, 0x12345678, 0x9ABCDEF0,
+        0x00000000, 0xFFFFFFFF, 0x01010101, 0x80808080
+    };
+
+    mpq_decrypt_block(data, 8, bt_key);
+    for (int i = 0; i < 8; i++) {
+        ASSERT_EQ_U32(data[i], original[i]);
+    }
+
+    TEST_END();
+}
 /* -----------------------------------------------------------------------
  * Test: file key derivation strips path
  * ----------------------------------------------------------------------- */
@@ -1881,6 +1940,7 @@ int main(int argc, char *argv[])
     test_encrypt_decrypt_roundtrip();
     test_encrypt_decrypt_table_keys();
     test_encrypt_known_ciphertext();
+    test_encrypt_ciphertext_matches_stormlib();
     test_file_key_derivation();
     test_open_nonexistent();
     test_open_null();
