@@ -27,8 +27,12 @@
 #include "mpq_crypto.h"
 #include "mpq_explode.h"
 
+#if defined(MPQFS_HAS_ZLIB) && MPQFS_HAS_ZLIB
 #include <zlib.h>
+#endif
+#if defined(MPQFS_HAS_BZIP2) && MPQFS_HAS_BZIP2
 #include <bzlib.h>
+#endif
 
 #include <stdlib.h>
 #include <string.h>
@@ -121,17 +125,21 @@ static int mpq_stream_load_sector(mpq_stream_t *stream, uint32_t sector_idx)
             return 0;
         }
 
-        /* Read the compressed sector data into a temporary buffer. */
-        uint8_t *comp_buf = (uint8_t *)malloc(comp_size);
-        if (!comp_buf) {
-            mpq_set_error(archive, "mpq_stream: out of memory for "
-                          "compressed sector (%u bytes)", comp_size);
-            return -1;
+        /* Ensure the reusable compressed-data buffer is large enough. */
+        if (comp_size > stream->comp_buf_cap) {
+            uint8_t *new_buf = (uint8_t *)realloc(stream->comp_buf, comp_size);
+            if (!new_buf) {
+                mpq_set_error(archive, "mpq_stream: out of memory for "
+                              "compressed sector (%u bytes)", comp_size);
+                return -1;
+            }
+            stream->comp_buf = new_buf;
+            stream->comp_buf_cap = comp_size;
         }
+        uint8_t *comp_buf = stream->comp_buf;
 
         if (mpq_raw_read(archive, file_abs + sector_start,
                          comp_buf, comp_size) != 0) {
-            free(comp_buf);
             mpq_set_error(archive, "mpq_stream: read error on "
                           "compressed sector %u", sector_idx);
             return -1;
@@ -154,7 +162,6 @@ static int mpq_stream_load_sector(mpq_stream_t *stream, uint32_t sector_idx)
             rc = pk_explode_sector(comp_buf, comp_size,
                                    stream->sector_buf, expect);
             if (rc != PK_OK) {
-                free(comp_buf);
                 mpq_set_error(archive, "mpq_stream: PKWARE explode failed "
                               "on sector %u (rc=%d)", sector_idx, rc);
                 return -1;
@@ -165,7 +172,6 @@ static int mpq_stream_load_sector(mpq_stream_t *stream, uint32_t sector_idx)
              * indicates the compression method(s) used.
              */
             if (comp_size < 1) {
-                free(comp_buf);
                 mpq_set_error(archive, "mpq_stream: zero-length compressed "
                               "sector %u", sector_idx);
                 return -1;
@@ -190,7 +196,6 @@ static int mpq_stream_load_sector(mpq_stream_t *stream, uint32_t sector_idx)
                 rc = pk_explode_sector(src_data, src_len,
                                        stream->sector_buf, expect);
                 if (rc != PK_OK) {
-                    free(comp_buf);
                     mpq_set_error(archive, "mpq_stream: PKWARE explode "
                                   "(multi) failed on sector %u (rc=%d)",
                                   sector_idx, rc);
@@ -203,45 +208,63 @@ static int mpq_stream_load_sector(mpq_stream_t *stream, uint32_t sector_idx)
 
             /* --- zlib / deflate (0x02) --- */
             if (comp_method & MPQ_COMP_ZLIB) {
+#if defined(MPQFS_HAS_ZLIB) && MPQFS_HAS_ZLIB
                 uLongf dest_len = (uLongf)expect;
                 int zrc = uncompress(stream->sector_buf, &dest_len,
                                      src_data, (uLong)src_len);
                 if (zrc != Z_OK) {
-                    free(comp_buf);
                     mpq_set_error(archive, "mpq_stream: zlib uncompress "
                                   "failed on sector %u (zrc=%d)",
                                   sector_idx, zrc);
                     return -1;
                 }
+#else
+                mpq_set_error(archive, "mpq_stream: zlib decompression "
+                              "required but mpqfs was built without zlib "
+                              "support (sector %u)", sector_idx);
+                return -1;
+#endif
             }
 
             /* --- bzip2 (0x10) --- */
             if (comp_method & MPQ_COMP_BZIP2) {
+#if defined(MPQFS_HAS_BZIP2) && MPQFS_HAS_BZIP2
                 unsigned int dest_len = (unsigned int)expect;
                 int brc = BZ2_bzBuffToBuffDecompress(
                               (char *)stream->sector_buf, &dest_len,
                               (char *)src_data, (unsigned int)src_len,
                               0, 0);
                 if (brc != BZ_OK) {
-                    free(comp_buf);
                     mpq_set_error(archive, "mpq_stream: bzip2 decompress "
                                   "failed on sector %u (brc=%d)",
                                   sector_idx, brc);
                     return -1;
                 }
+#else
+                mpq_set_error(archive, "mpq_stream: bzip2 decompression "
+                              "required but mpqfs was built without bzip2 "
+                              "support (sector %u)", sector_idx);
+                return -1;
+#endif
             }
 
             /* --- Unsupported methods --- */
-            if (comp_method & ~(MPQ_COMP_PKWARE | MPQ_COMP_ZLIB | MPQ_COMP_BZIP2)) {
-                free(comp_buf);
-                mpq_set_error(archive, "mpq_stream: unsupported compression "
-                              "method 0x%02X on sector %u",
-                              (unsigned)comp_method, sector_idx);
-                return -1;
+            {
+                uint8_t supported = MPQ_COMP_PKWARE;
+#if defined(MPQFS_HAS_ZLIB) && MPQFS_HAS_ZLIB
+                supported |= MPQ_COMP_ZLIB;
+#endif
+#if defined(MPQFS_HAS_BZIP2) && MPQFS_HAS_BZIP2
+                supported |= MPQ_COMP_BZIP2;
+#endif
+                if (comp_method & ~supported) {
+                    mpq_set_error(archive, "mpq_stream: unsupported compression "
+                                  "method 0x%02X on sector %u",
+                                  (unsigned)comp_method, sector_idx);
+                    return -1;
+                }
             }
         }
-
-        free(comp_buf);
 
         stream->cached_sector     = sector_idx;
         stream->cached_sector_len = expect;
@@ -472,6 +495,7 @@ void mpq_stream_close(mpq_stream_t *stream)
 
     free(stream->sector_offsets);
     free(stream->sector_buf);
+    free(stream->comp_buf);
     free(stream);
 }
 

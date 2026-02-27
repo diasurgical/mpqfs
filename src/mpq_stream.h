@@ -72,6 +72,14 @@ typedef struct mpq_stream {
     /* Number of valid bytes in sector_buf (may be < sector_size for last sector). */
     uint32_t cached_sector_len;
 
+    /*
+     * Reusable buffer for reading compressed sector data.
+     * Allocated on first use and grown as needed, avoiding a malloc/free
+     * per sector read.  Freed when the stream is closed.
+     */
+    uint8_t *comp_buf;
+    uint32_t comp_buf_cap;
+
     /* Current logical read position within the uncompressed file. */
     uint64_t position;
 } mpq_stream_t;

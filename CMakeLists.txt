@@ -73,12 +73,29 @@ else()
     message(STATUS "mpqfs: SDL integration disabled")
 endif()
 
-# --- zlib and bzip2 (required for MPQ sector decompression) ---
-if(NOT TARGET ZLIB::ZLIB)
-    find_package(ZLIB REQUIRED)
+# --- zlib and bzip2 (optional, for MPQ_FILE_COMPRESS sector decompression) ---
+#
+# Diablo 1 / Hellfire MPQ files only use PKWARE DCL implode (MPQ_FILE_IMPLODE),
+# which is always built in.  zlib and bzip2 are only needed for MPQ archives
+# that use the multi-method compression flag (MPQ_FILE_COMPRESS), which is
+# common in Warcraft III / WoW but not in Diablo.
+#
+# On platforms where zlib or bzip2 are unavailable (e.g. original Xbox / nxdk),
+# set MPQFS_USE_ZLIB=OFF and/or MPQFS_USE_BZIP2=OFF.  If an MPQ file using
+# those methods is encountered at runtime, a clear error is reported.
+
+option(MPQFS_USE_ZLIB  "Enable zlib decompression for MPQ_FILE_COMPRESS sectors"  ON)
+option(MPQFS_USE_BZIP2 "Enable bzip2 decompression for MPQ_FILE_COMPRESS sectors" ON)
+
+if(MPQFS_USE_ZLIB)
+    if(NOT TARGET ZLIB::ZLIB)
+        find_package(ZLIB REQUIRED)
+    endif()
 endif()
-if(NOT TARGET BZip2::BZip2)
-    find_package(BZip2 REQUIRED)
+if(MPQFS_USE_BZIP2)
+    if(NOT TARGET BZip2::BZip2)
+        find_package(BZip2 REQUIRED)
+    endif()
 endif()
 
 # --- Library target ---
@@ -118,13 +135,24 @@ target_include_directories(mpqfs
 # SDL version define (used internally by mpq_sdl.c)
 target_compile_definitions(mpqfs PRIVATE MPQFS_SDL_VERSION=${_MPQFS_SDL_VER})
 
-# zlib and bzip2 linkage
+# zlib and bzip2 linkage (when enabled)
 # When mpqfs is built as a static library (the default), consumers need
-# the transitive zlib/bzip2 dependency to resolve symbols at link time.
-if(MPQFS_BUILD_SHARED)
-    target_link_libraries(mpqfs PRIVATE ZLIB::ZLIB BZip2::BZip2)
-else()
-    target_link_libraries(mpqfs PUBLIC ZLIB::ZLIB BZip2::BZip2)
+# the transitive dependency to resolve symbols at link time.
+if(MPQFS_USE_ZLIB)
+    target_compile_definitions(mpqfs PUBLIC MPQFS_HAS_ZLIB=1)
+    if(MPQFS_BUILD_SHARED)
+        target_link_libraries(mpqfs PRIVATE ZLIB::ZLIB)
+    else()
+        target_link_libraries(mpqfs PUBLIC ZLIB::ZLIB)
+    endif()
+endif()
+if(MPQFS_USE_BZIP2)
+    target_compile_definitions(mpqfs PUBLIC MPQFS_HAS_BZIP2=1)
+    if(MPQFS_BUILD_SHARED)
+        target_link_libraries(mpqfs PRIVATE BZip2::BZip2)
+    else()
+        target_link_libraries(mpqfs PUBLIC BZip2::BZip2)
+    endif()
 endif()
 
 # SDL linkage
