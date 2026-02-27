@@ -38,11 +38,12 @@ extern "C" {
  * Per-file entry stored in the writer before finalisation
  * ----------------------------------------------------------------------- */
 
-typedef struct mpqfs_writer_file {
+struct mpqfs_writer_file {
     char     *filename;   /* Archive-relative path (owned, heap-allocated)   */
     uint8_t  *data;       /* File contents (owned, heap-allocated copy)      */
     uint32_t  size;       /* Uncompressed (= on-disk) size in bytes         */
-} mpqfs_writer_file_t;
+};
+typedef struct mpqfs_writer_file mpqfs_writer_file_t;
 
 /* -----------------------------------------------------------------------
  * Writer state
@@ -50,7 +51,7 @@ typedef struct mpqfs_writer_file {
 
 #define MPQFS_WRITER_INITIAL_CAPACITY 16
 
-typedef struct mpqfs_writer {
+struct mpqfs_writer {
     FILE     *fp;                /* Destination file handle                   */
     int       owns_fd;           /* Non-zero if we should fclose(fp)         */
 
@@ -63,7 +64,9 @@ typedef struct mpqfs_writer {
     uint32_t  file_capacity;     /* Allocated capacity of the files array    */
 
     char      error[256];        /* Last error message                       */
-} mpqfs_writer_t;
+};
+typedef struct mpqfs_writer mpqfs_writer_t;
+#define MPQFS_WRITER_T_DEFINED
 
 /* -----------------------------------------------------------------------
  * Internal helpers (implemented in mpq_writer.c)

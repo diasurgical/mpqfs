@@ -101,7 +101,7 @@ MPQFS_STATIC_ASSERT(sizeof(mpq_block_entry_t) == 16, "mpq_block_entry_t must be 
  * Runtime archive state
  * -------------------------------------------------------------------------- */
 
-typedef struct mpqfs_archive {
+struct mpqfs_archive {
     FILE              *fp;               /* Underlying file handle             */
     int                owns_fd;          /* Non-zero if we should fclose(fp)   */
 
@@ -115,7 +115,9 @@ typedef struct mpqfs_archive {
     char              *path;             /* Filesystem path (strdup, may be NULL) */
 
     char               error[256];       /* Last error message                 */
-} mpqfs_archive_t;
+};
+typedef struct mpqfs_archive mpqfs_archive_t;
+#define MPQFS_ARCHIVE_T_DEFINED
 
 /* --------------------------------------------------------------------------
  * Internal helpers (implemented in mpq_archive.c)
