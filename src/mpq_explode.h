@@ -395,12 +395,16 @@ static int pkexplode(const uint8_t *src, size_t src_size,
                     return PK_ERR_INPUT;
             }
 
-            /* End-of-stream sentinel (StormLib compatible):
-             * length code index 15 with extra bits value == 8.
-             * In StormLib this is LenBase[15] + 8 == 0x10E.
+            /* End-of-stream sentinel:
+             * The sentinel is the highest encodable value:
+             * len_idx=15 with all 8 extra bits set (extra=0xFF).
+             * This gives LenBase[15] + 0xFF = 0x0106 + 0xFF = 0x0205.
+             * In the original PKWare explode.c, DecodeLit() returns
+             * LenBase[code] + extra + 0x100, and the main loop exits
+             * when this value >= 0x305 (0x0205 + 0x100 = 0x0305).
              * The sentinel is checked BEFORE computing the final
-             * match length, matching StormLib's DecodeLit(). */
-            if (len_idx == 15 && extra == 8)
+             * match length, matching the original PKWare code. */
+            if (len_idx == 15 && extra == 0xFF)
                 break;
 
             match_len = pk_len_base[len_idx] + extra + 2;

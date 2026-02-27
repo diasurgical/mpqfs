@@ -12,12 +12,14 @@
  *   - Binary mode (comp_type = 0): literals are 8-bit raw values
  *   - Dictionary size selectable: 1024 (bits=4), 2048 (bits=5), 4096 (bits=6)
  *   - LZ77 sliding-window matching with Shannon-Fano coded lengths/distances
- *   - End-of-stream sentinel: match with length=2, distance=0
+ *   - End-of-stream sentinel: length code index 15 with extra = 0xFF
  *
  * The end-of-stream sentinel is encoded as length code index 15 with
- * extra bits value 8, which corresponds to LenBase[15] + 8 = 0x10E
- * in StormLib's representation, or match_len = 0x10E + 2 = 272 in
- * our representation.  This value is reserved and must never be
+ * all 8 extra bits set (extra = 0xFF), which corresponds to
+ * LenBase[15] + 0xFF = 0x0106 + 0xFF = 0x0205 in PKWare's representation.
+ * In the original PKWare explode.c, DecodeLit() returns this + 0x100 = 0x0305,
+ * and the loop exits when result >= 0x305.  The match length would be
+ * 0x0205 + 2 = 0x0207 = 519, which is reserved and must never be
  * emitted as an actual match.
  *
  * This implementation is designed for small buffers (MPQ sectors, typically
@@ -218,8 +220,8 @@ static inline int pk_write_distance(pk_bitwriter_t *bw, uint32_t distance,
  * -------------------------------------------------------------------------- */
 
 #define PK_MIN_MATCH      2
-#define PK_MAX_MATCH    519   /* Maximum encodable match length (StormLib compatible) */
-#define PK_SENTINEL_LEN 272   /* Reserved: LenBase[15]+8+2 = 0x0106+8+2 = 272 */
+#define PK_MAX_MATCH    518   /* Maximum usable match length (519 is the sentinel) */
+#define PK_SENTINEL_LEN 519   /* Reserved: LenBase[15]+0xFF+2 = 0x0106+0xFF+2 = 519 */
 
 static inline uint32_t pk_find_match(const uint8_t *data, size_t data_size,
                                      size_t pos, int dict_bits,
@@ -272,7 +274,7 @@ static inline uint32_t pk_find_match(const uint8_t *data, size_t data_size,
      * and 6-bit dist_idx is (63 << 2) | 3 = 255.  Handled by the check
      * above since best_dist >= 0x100 is rejected. */
 
-    /* Skip the sentinel length (272) — if a match lands exactly on it,
+    /* Skip the sentinel length (519) — if a match lands exactly on it,
      * shorten by one to avoid colliding with the end-of-stream marker. */
     if (best_len == PK_SENTINEL_LEN)
         best_len--;
@@ -340,19 +342,20 @@ static int pkimplode(const uint8_t *src, size_t src_size,
         }
     }
 
-    /* Write end-of-stream sentinel (StormLib compatible):
+    /* Write end-of-stream sentinel:
      *   flag = 1                                              (1 bit)
      *   length code index 15                                  (pk_len_bits[15] bits)
-     *   extra bits value = 8                                  (pk_ex_len_bits[15] = 8 bits)
+     *   extra bits value = 0xFF                               (pk_ex_len_bits[15] = 8 bits)
      *
-     * This encodes LenBase[15] + 8 = 0x10E in StormLib's representation,
-     * which is the canonical end-of-stream marker for PKWARE DCL.
+     * This encodes LenBase[15] + 0xFF = 0x0205.  In the original PKWare
+     * explode.c this value + 0x100 = 0x0305, which triggers the loop
+     * exit condition (result >= 0x305).
      */
     if (pk_bw_write(&bw, 1, 1) != 0)       /* flag = match */
         return PK_ERR_OUTPUT;
     if (pk_bw_write(&bw, pk_len_bits[15], pk_len_code[15]) != 0)  /* length index 15 */
         return PK_ERR_OUTPUT;
-    if (pk_bw_write(&bw, (int)pk_ex_len_bits[15], 8) != 0)  /* extra = 8 (sentinel value) */
+    if (pk_bw_write(&bw, (int)pk_ex_len_bits[15], 0xFF) != 0)  /* extra = 0xFF (sentinel) */
         return PK_ERR_OUTPUT;
 
     /* Flush any remaining bits. */

@@ -1860,7 +1860,7 @@ static void test_pk_sentinel(void)
      *   byte 1: 0x06  (dict_bits = 6)
      *   bits (LSB first):
      *     bit  0:      0          — literal flag
-     *     bits 1-8:    01000001   — literal 'A' (0x41)
+     *     bits 1-8:    10000010   — literal 'A' (0x41 LSB-first)
      *     bit  9:      1          — match flag
      *     bits 10-12:  101        — length code index 0 (pk_len_code[0]=0x05, 3 bits) → len=2
      *     bits 13-14:  11         — dist code index 0 (pk_dist_code[0]=0x03, 2 bits)
@@ -1868,18 +1868,18 @@ static void test_pk_sentinel(void)
      *     === this is length=2, distance=0: MUST copy 'A','A', NOT stop ===
      *     bit  17:     1          — match flag (sentinel)
      *     bits 18-24:  0000000    — length code index 15 (pk_len_code[15]=0x00, 7 bits)
-     *     bits 25-32:  00001000   — extra bits = 8 (sentinel value)
+     *     bits 25-32:  11111111   — extra bits = 0xFF (sentinel: LenBase[15]+0xFF = 0x305)
      *
      * Expected output: 'A', 'A', 'A' (3 bytes)
      * (literal 'A', then copy 2 from 1 byte back = 'A','A')
      *
-     * Byte encoding (computed by EMIT_BITS helper):
-     *   byte 2 = 0x82, byte 3 = 0x76, byte 4 = 0x02, byte 5 = 0x10, byte 6 = 0x00
+     * Byte encoding:
+     *   byte 2 = 0x82, byte 3 = 0x76, byte 4 = 0x02, byte 5 = 0xFE, byte 6 = 0x01
      */
     {
         uint8_t crafted[] = {
             0x00, 0x06,  /* header: binary mode, dict_bits=6 */
-            0x82, 0x76, 0x02, 0x10, 0x00
+            0x82, 0x76, 0x02, 0xFE, 0x01
         };
         uint8_t out[8];
         size_t out_size = sizeof(out);
