@@ -14,6 +14,12 @@
  *   - LZ77 sliding-window matching with Shannon-Fano coded lengths/distances
  *   - End-of-stream sentinel: match with length=2, distance=0
  *
+ * The end-of-stream sentinel is encoded as length code index 15 with
+ * extra bits value 8, which corresponds to LenBase[15] + 8 = 0x10E
+ * in StormLib's representation, or match_len = 0x10E + 2 = 272 in
+ * our representation.  This value is reserved and must never be
+ * emitted as an actual match.
+ *
  * This implementation is designed for small buffers (MPQ sectors, typically
  * 4096 bytes) and favours simplicity and correctness over speed.
  *
@@ -211,8 +217,9 @@ static inline int pk_write_distance(pk_bitwriter_t *bw, uint32_t distance,
  * would be needed for larger buffers.
  * -------------------------------------------------------------------------- */
 
-#define PK_MIN_MATCH   2
-#define PK_MAX_MATCH   (0x106 + 2)  /* 0x204 = 516 bytes, matching StormLib */
+#define PK_MIN_MATCH      2
+#define PK_MAX_MATCH    519   /* Maximum encodable match length (StormLib compatible) */
+#define PK_SENTINEL_LEN 272   /* Reserved: LenBase[15]+8+2 = 0x0106+8+2 = 272 */
 
 static inline uint32_t pk_find_match(const uint8_t *data, size_t data_size,
                                      size_t pos, int dict_bits,
@@ -264,6 +271,11 @@ static inline uint32_t pk_find_match(const uint8_t *data, size_t data_size,
     /* For len==2 matches, the maximum distance encodable with 2 low bits
      * and 6-bit dist_idx is (63 << 2) | 3 = 255.  Handled by the check
      * above since best_dist >= 0x100 is rejected. */
+
+    /* Skip the sentinel length (272) — if a match lands exactly on it,
+     * shorten by one to avoid colliding with the end-of-stream marker. */
+    if (best_len == PK_SENTINEL_LEN)
+        best_len--;
 
     *out_distance = best_dist;
     return best_len;
@@ -328,21 +340,19 @@ static int pkimplode(const uint8_t *src, size_t src_size,
         }
     }
 
-    /* Write end-of-stream sentinel: match with length=2, distance=0.
+    /* Write end-of-stream sentinel (StormLib compatible):
+     *   flag = 1                                              (1 bit)
+     *   length code index 15                                  (pk_len_bits[15] bits)
+     *   extra bits value = 8                                  (pk_ex_len_bits[15] = 8 bits)
      *
-     * Encoding:
-     *   flag = 1                                       (1 bit)
-     *   length code for index 0 (base=0, len=0+2=2)    (pk_len_bits[0] bits)
-     *   distance index for (0 >> 2) = 0                (pk_dist_bits[0] bits)
-     *   distance low 2 bits = 0                        (2 bits)
+     * This encodes LenBase[15] + 8 = 0x10E in StormLib's representation,
+     * which is the canonical end-of-stream marker for PKWARE DCL.
      */
     if (pk_bw_write(&bw, 1, 1) != 0)       /* flag = match */
         return PK_ERR_OUTPUT;
-    if (pk_bw_write(&bw, pk_len_bits[0], pk_len_code[0]) != 0)  /* length index 0 */
+    if (pk_bw_write(&bw, pk_len_bits[15], pk_len_code[15]) != 0)  /* length index 15 */
         return PK_ERR_OUTPUT;
-    if (pk_bw_write(&bw, pk_dist_bits[0], pk_dist_code[0]) != 0)  /* dist index 0 */
-        return PK_ERR_OUTPUT;
-    if (pk_bw_write(&bw, 2, 0) != 0)       /* dist low bits = 0 */
+    if (pk_bw_write(&bw, (int)pk_ex_len_bits[15], 8) != 0)  /* extra = 8 (sentinel value) */
         return PK_ERR_OUTPUT;
 
     /* Flush any remaining bits. */

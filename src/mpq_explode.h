@@ -388,21 +388,22 @@ static int pkexplode(const uint8_t *src, size_t src_size,
 
             /* Read extra length bits if this code has any. */
             uint32_t ex_bits = pk_ex_len_bits[len_idx];
+            uint32_t extra = 0;
             if (ex_bits != 0) {
-                uint32_t extra = pk_bs_read(&bs, (int)ex_bits);
-                if (extra == (uint32_t)-1) {
-                    /* Special case: for the last length code (15) with
-                     * 8 extra bits, running out of input with value 0
-                     * could mean end of stream.  But if we truly can't
-                     * read, it's an error for other codes. */
-                    if (len_idx != 15)
-                        return PK_ERR_INPUT;
-                    extra = 0;
-                }
-                match_len = pk_len_base[len_idx] + extra + 2;
-            } else {
-                match_len = pk_len_base[len_idx] + 2;
+                extra = pk_bs_read(&bs, (int)ex_bits);
+                if (extra == (uint32_t)-1)
+                    return PK_ERR_INPUT;
             }
+
+            /* End-of-stream sentinel (StormLib compatible):
+             * length code index 15 with extra bits value == 8.
+             * In StormLib this is LenBase[15] + 8 == 0x10E.
+             * The sentinel is checked BEFORE computing the final
+             * match length, matching StormLib's DecodeLit(). */
+            if (len_idx == 15 && extra == 8)
+                break;
+
+            match_len = pk_len_base[len_idx] + extra + 2;
 
             /* Decode the distance position code. */
             int dist_idx = pk_decode_dist(&bs);
@@ -419,11 +420,6 @@ static int pkexplode(const uint8_t *src, size_t src_size,
                 if (lo == (uint32_t)-1)
                     return PK_ERR_INPUT;
                 dist = ((uint32_t)dist_idx << 2) | lo;
-
-                /* End-of-stream sentinel: distance == 0 with length == 2
-                 * is physically meaningless and terminates the stream. */
-                if (dist == 0)
-                    break;
             } else {
                 uint32_t lo = pk_bs_read(&bs, dict_bits);
                 if (lo == (uint32_t)-1)

@@ -1786,6 +1786,114 @@ static void test_pk_null_safety(void)
 }
 
 /* Test: hash type constants match internal values */
+/* Test: PKWARE DCL sentinel correctness.
+ *
+ * The PKWARE DCL end-of-stream sentinel is length code index 15 with
+ * extra bits value 8 (LenBase[15] + 8 = 0x10E in StormLib terms).
+ *
+ * A previous bug used length=2 / distance=0 as the sentinel, which
+ * collided with a valid RLE match (repeat the previous byte twice).
+ * Data containing such matches would decompress too early, producing
+ * truncated output.
+ *
+ * This test creates input that forces the compressor to emit length-2,
+ * distance-0 matches and verifies that the roundtrip is lossless.
+ */
+static void test_pk_sentinel(void)
+{
+    TEST_BEGIN("pk_sentinel");
+
+    /* Build data that will produce length-2, distance-0 matches:
+     * pairs of identical bytes followed by a different byte.
+     * E.g. AA B CC D EE F ...
+     * The compressor should encode each pair as a length-2 match at
+     * distance 0 (repeat the previous byte).  If the sentinel is
+     * incorrectly defined as length=2/distance=0, the decompressor
+     * would stop at the first such match. */
+    uint8_t src[512];
+    for (size_t i = 0; i < sizeof(src); i++) {
+        /* Groups of 3: two identical bytes then a different one. */
+        size_t group = i / 3;
+        size_t pos   = i % 3;
+        if (pos < 2)
+            src[i] = (uint8_t)(group & 0xFF);
+        else
+            src[i] = (uint8_t)((group + 0x80) & 0xFF);
+    }
+
+    uint8_t compressed[2048];
+    size_t comp_size = sizeof(compressed);
+
+    int rc = mpqfs_pk_implode(src, sizeof(src), compressed, &comp_size, 6);
+    ASSERT_TRUE(rc == 0);
+    ASSERT_TRUE(comp_size > 0);
+
+    uint8_t decompressed[512];
+    size_t decomp_size = sizeof(decompressed);
+
+    rc = mpqfs_pk_explode(compressed, comp_size, decompressed, &decomp_size);
+    ASSERT_TRUE(rc == 0);
+    ASSERT_EQ_SZ(decomp_size, sizeof(src));
+    ASSERT_TRUE(memcmp(decompressed, src, sizeof(src)) == 0);
+
+    /* Also test with a long run of a single byte — this forces many
+     * consecutive length-2/distance-0 matches. */
+    memset(src, 0x42, sizeof(src));
+
+    comp_size = sizeof(compressed);
+    rc = mpqfs_pk_implode(src, sizeof(src), compressed, &comp_size, 6);
+    ASSERT_TRUE(rc == 0);
+
+    decomp_size = sizeof(decompressed);
+    rc = mpqfs_pk_explode(compressed, comp_size, decompressed, &decomp_size);
+    ASSERT_TRUE(rc == 0);
+    ASSERT_EQ_SZ(decomp_size, sizeof(src));
+    ASSERT_TRUE(memcmp(decompressed, src, sizeof(src)) == 0);
+
+    /* Test with a hand-crafted compressed stream containing a length=2,
+     * distance=0 match followed by the correct sentinel.
+     * The decompressor must treat the length=2/distance=0 match as a
+     * valid copy (repeat the previous byte twice), NOT as end-of-stream.
+     *
+     * Stream layout (binary mode, dict_bits=6):
+     *   byte 0: 0x00  (comp_type = binary)
+     *   byte 1: 0x06  (dict_bits = 6)
+     *   bits (LSB first):
+     *     bit  0:      0          — literal flag
+     *     bits 1-8:    01000001   — literal 'A' (0x41)
+     *     bit  9:      1          — match flag
+     *     bits 10-12:  101        — length code index 0 (pk_len_code[0]=0x05, 3 bits) → len=2
+     *     bits 13-14:  11         — dist code index 0 (pk_dist_code[0]=0x03, 2 bits)
+     *     bits 15-16:  00         — dist low 2 bits = 0  → distance=0 (1 byte back)
+     *     === this is length=2, distance=0: MUST copy 'A','A', NOT stop ===
+     *     bit  17:     1          — match flag (sentinel)
+     *     bits 18-24:  0000000    — length code index 15 (pk_len_code[15]=0x00, 7 bits)
+     *     bits 25-32:  00001000   — extra bits = 8 (sentinel value)
+     *
+     * Expected output: 'A', 'A', 'A' (3 bytes)
+     * (literal 'A', then copy 2 from 1 byte back = 'A','A')
+     *
+     * Byte encoding (computed by EMIT_BITS helper):
+     *   byte 2 = 0x82, byte 3 = 0x76, byte 4 = 0x02, byte 5 = 0x10, byte 6 = 0x00
+     */
+    {
+        uint8_t crafted[] = {
+            0x00, 0x06,  /* header: binary mode, dict_bits=6 */
+            0x82, 0x76, 0x02, 0x10, 0x00
+        };
+        uint8_t out[8];
+        size_t out_size = sizeof(out);
+        rc = mpqfs_pk_explode(crafted, sizeof(crafted), out, &out_size);
+        ASSERT_TRUE(rc == 0);
+        ASSERT_EQ_SZ(out_size, 3);
+        ASSERT_TRUE(out[0] == 'A');
+        ASSERT_TRUE(out[1] == 'A');
+        ASSERT_TRUE(out[2] == 'A');
+    }
+
+    TEST_END();
+}
+
 static void test_hash_type_constants(void)
 {
     TEST_BEGIN("hash_type_constants");
@@ -1972,6 +2080,7 @@ int main(int argc, char *argv[])
     test_pk_roundtrip();
     test_pk_dict_bits();
     test_pk_null_safety();
+    test_pk_sentinel();
     test_hash_type_constants();
 
     printf("\n");
