@@ -1906,6 +1906,234 @@ static void test_hash_type_constants(void)
     TEST_END();
 }
 
+/* -----------------------------------------------------------------------
+ * Hash-based lookup API tests
+ * ----------------------------------------------------------------------- */
+
+static void test_find_hash_basic(void)
+{
+    TEST_BEGIN("find_hash_basic");
+
+    /* Create a small archive with two files via the writer. */
+    const char *tmp_path = "/tmp/mpqfs_test_find_hash.mpq";
+    const char *fn1 = "alpha";
+    const char *fn2 = "beta";
+    const char *data1 = "AAAA";
+    const char *data2 = "BBBBBB";
+
+    mpqfs_writer_t *writer = mpqfs_writer_create(tmp_path, 16);
+    ASSERT_NOT_NULL(writer);
+    ASSERT_TRUE(mpqfs_writer_add_file(writer, fn1, data1, 4));
+    ASSERT_TRUE(mpqfs_writer_add_file(writer, fn2, data2, 6));
+    ASSERT_TRUE(mpqfs_writer_close(writer));
+
+    mpqfs_archive_t *archive = mpqfs_open(tmp_path);
+    ASSERT_NOT_NULL(archive);
+
+    /* mpqfs_find_hash should return a valid index for existing files. */
+    uint32_t h1 = mpqfs_find_hash(archive, fn1);
+    uint32_t h2 = mpqfs_find_hash(archive, fn2);
+    ASSERT_TRUE(h1 != UINT32_MAX);
+    ASSERT_TRUE(h2 != UINT32_MAX);
+    ASSERT_TRUE(h1 != h2);
+
+    /* Non-existent file should return UINT32_MAX. */
+    uint32_t h_missing = mpqfs_find_hash(archive, "nonexistent");
+    ASSERT_EQ_U32(h_missing, UINT32_MAX);
+
+    /* NULL args. */
+    ASSERT_EQ_U32(mpqfs_find_hash(NULL, fn1), UINT32_MAX);
+    ASSERT_EQ_U32(mpqfs_find_hash(archive, NULL), UINT32_MAX);
+
+    mpqfs_close(archive);
+    remove(tmp_path);
+
+    TEST_END();
+}
+
+static void test_has_file_hash(void)
+{
+    TEST_BEGIN("has_file_hash");
+
+    const char *tmp_path = "/tmp/mpqfs_test_has_file_hash.mpq";
+    const char *fn = "hero";
+    const char *data = "ABCDEFGHIJKLMNOP";
+
+    mpqfs_writer_t *writer = mpqfs_writer_create(tmp_path, 16);
+    ASSERT_NOT_NULL(writer);
+    ASSERT_TRUE(mpqfs_writer_add_file(writer, fn, data, 16));
+    ASSERT_TRUE(mpqfs_writer_close(writer));
+
+    mpqfs_archive_t *archive = mpqfs_open(tmp_path);
+    ASSERT_NOT_NULL(archive);
+
+    /* Look up the hash and verify it. */
+    uint32_t hash = mpqfs_find_hash(archive, fn);
+    ASSERT_TRUE(hash != UINT32_MAX);
+    ASSERT_TRUE(mpqfs_has_file_hash(archive, hash));
+
+    /* Out-of-range hash should return false. */
+    ASSERT_TRUE(!mpqfs_has_file_hash(archive, UINT32_MAX));
+    ASSERT_TRUE(!mpqfs_has_file_hash(archive, 99999));
+
+    /* NULL archive should return false. */
+    ASSERT_TRUE(!mpqfs_has_file_hash(NULL, hash));
+
+    /* Round-trip: mpqfs_has_file and mpqfs_has_file_hash agree. */
+    ASSERT_TRUE(mpqfs_has_file(archive, fn));
+    ASSERT_TRUE(mpqfs_has_file_hash(archive, hash));
+
+    ASSERT_TRUE(!mpqfs_has_file(archive, "nonexistent"));
+    ASSERT_EQ_U32(mpqfs_find_hash(archive, "nonexistent"), UINT32_MAX);
+
+    mpqfs_close(archive);
+    remove(tmp_path);
+
+    TEST_END();
+}
+
+static void test_find_hash_synthetic(void)
+{
+    TEST_BEGIN("find_hash_synthetic");
+
+    /*
+     * Use the synthetic MPQ approach to verify that mpqfs_find_hash
+     * returns the correct hash table entry index (the bucket).
+     */
+    mpq_crypto_init();
+
+    const char *test_filename = "test\\hello.txt";
+    const char *file_data     = "Hello, MPQ!\n";
+    uint32_t    file_data_len = 12;
+    uint32_t    hash_table_count = 16;
+    uint32_t    block_table_count = 1;
+
+    uint32_t header_size        = 32;
+    uint32_t file_data_offset   = header_size;
+    uint32_t hash_table_offset  = file_data_offset + file_data_len;
+    uint32_t block_table_offset = hash_table_offset + hash_table_count * 16;
+    uint32_t archive_size       = block_table_offset + block_table_count * 16;
+
+    uint8_t *mpq_buf = (uint8_t *)calloc(1, archive_size);
+    ASSERT_NOT_NULL(mpq_buf);
+
+    write_le32(mpq_buf +  0, 0x1A51504D);
+    write_le32(mpq_buf +  4, 32);
+    write_le32(mpq_buf +  8, archive_size);
+    write_le16(mpq_buf + 12, 0);
+    write_le16(mpq_buf + 14, 3);
+    write_le32(mpq_buf + 16, hash_table_offset);
+    write_le32(mpq_buf + 20, block_table_offset);
+    write_le32(mpq_buf + 24, hash_table_count);
+    write_le32(mpq_buf + 28, block_table_count);
+
+    memcpy(mpq_buf + file_data_offset, file_data, file_data_len);
+
+    /* Compute expected bucket. */
+    uint32_t expected_bucket = mpq_hash_string(test_filename, MPQ_HASH_TABLE_INDEX) % hash_table_count;
+    uint32_t name_a = mpq_hash_string(test_filename, MPQ_HASH_NAME_A);
+    uint32_t name_b = mpq_hash_string(test_filename, MPQ_HASH_NAME_B);
+
+    uint32_t *hash_table = (uint32_t *)(mpq_buf + hash_table_offset);
+    for (uint32_t i = 0; i < hash_table_count; i++) {
+        uint32_t base = i * 4;
+        hash_table[base + 0] = 0xFFFFFFFF;
+        hash_table[base + 1] = 0xFFFFFFFF;
+        hash_table[base + 2] = 0xFFFFFFFF;
+        hash_table[base + 3] = 0xFFFFFFFF;
+    }
+
+    uint32_t bkt = expected_bucket * 4;
+    hash_table[bkt + 0] = name_a;
+    hash_table[bkt + 1] = name_b;
+    hash_table[bkt + 2] = 0x00000000;
+    hash_table[bkt + 3] = 0;
+
+    uint32_t ht_key = mpq_hash_string("(hash table)", MPQ_HASH_FILE_KEY);
+    mpq_encrypt_block(hash_table, hash_table_count * 4, ht_key);
+
+    uint32_t *block_table = (uint32_t *)(mpq_buf + block_table_offset);
+    block_table[0] = file_data_offset;
+    block_table[1] = file_data_len;
+    block_table[2] = file_data_len;
+    block_table[3] = 0x80000000;
+
+    uint32_t bt_key = mpq_hash_string("(block table)", MPQ_HASH_FILE_KEY);
+    mpq_encrypt_block(block_table, block_table_count * 4, bt_key);
+
+    const char *tmp_path = "/tmp/mpqfs_test_find_hash_synth.mpq";
+    FILE *fp = fopen(tmp_path, "wb");
+    ASSERT_NOT_NULL(fp);
+    fwrite(mpq_buf, 1, archive_size, fp);
+    fclose(fp);
+    free(mpq_buf);
+
+    mpqfs_archive_t *archive = mpqfs_open(tmp_path);
+    ASSERT_NOT_NULL(archive);
+
+    /* mpqfs_find_hash should return exactly the bucket we placed the entry in. */
+    uint32_t found_hash = mpqfs_find_hash(archive, test_filename);
+    ASSERT_EQ_U32(found_hash, expected_bucket);
+
+    /* mpqfs_has_file_hash should confirm it exists. */
+    ASSERT_TRUE(mpqfs_has_file_hash(archive, found_hash));
+
+    /* Reading via the hash should give us the same data as reading by name. */
+    size_t read_size = 0;
+    void *data = mpqfs_read_file(archive, test_filename, &read_size);
+    ASSERT_NOT_NULL(data);
+    ASSERT_EQ_SZ(read_size, (size_t)file_data_len);
+    ASSERT_TRUE(memcmp(data, file_data, file_data_len) == 0);
+    free(data);
+
+    mpqfs_close(archive);
+    remove(tmp_path);
+
+    TEST_END();
+}
+
+static void test_hash_multi_file(void)
+{
+    TEST_BEGIN("hash_multi_file");
+
+    /* Create archive with several files and verify each hash is distinct
+     * and round-trips correctly with mpqfs_has_file_hash. */
+    const char *tmp_path = "/tmp/mpqfs_test_hash_multi.mpq";
+    const char *names[] = { "alpha", "beta", "gamma", "delta" };
+    const char *datas[] = { "AAA", "BBBB", "CCCCC", "DDDDDD" };
+    size_t sizes[]      = { 3, 4, 5, 6 };
+    int count = 4;
+
+    mpqfs_writer_t *writer = mpqfs_writer_create(tmp_path, 16);
+    ASSERT_NOT_NULL(writer);
+    for (int i = 0; i < count; i++) {
+        ASSERT_TRUE(mpqfs_writer_add_file(writer, names[i], datas[i], sizes[i]));
+    }
+    ASSERT_TRUE(mpqfs_writer_close(writer));
+
+    mpqfs_archive_t *archive = mpqfs_open(tmp_path);
+    ASSERT_NOT_NULL(archive);
+
+    uint32_t hashes[4];
+    for (int i = 0; i < count; i++) {
+        hashes[i] = mpqfs_find_hash(archive, names[i]);
+        ASSERT_TRUE(hashes[i] != UINT32_MAX);
+        ASSERT_TRUE(mpqfs_has_file_hash(archive, hashes[i]));
+    }
+
+    /* All hashes should be distinct. */
+    for (int i = 0; i < count; i++) {
+        for (int j = i + 1; j < count; j++) {
+            ASSERT_TRUE(hashes[i] != hashes[j]);
+        }
+    }
+
+    mpqfs_close(archive);
+    remove(tmp_path);
+
+    TEST_END();
+}
+
 static const char *flags_to_str(uint32_t flags, char *buf, size_t buf_size)
 {
     buf[0] = '\0';
@@ -2065,6 +2293,12 @@ int main(int argc, char *argv[])
     test_writer_compression();
     test_writer_save_file_layout();
     test_read_share_save();
+
+    /* Hash-based lookup API tests */
+    test_find_hash_basic();
+    test_has_file_hash();
+    test_find_hash_synthetic();
+    test_hash_multi_file();
 
     /* Work Item 1 — new public API tests */
     test_clone_roundtrip();

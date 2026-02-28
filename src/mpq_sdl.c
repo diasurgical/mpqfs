@@ -193,6 +193,35 @@ SDL_IOStream *mpqfs_open_io(mpqfs_archive_t *archive, const char *filename)
     return mpqfs_sdl3_create_io(ctx, archive);
 }
 
+SDL_IOStream *mpqfs_open_io_from_hash(mpqfs_archive_t *archive, uint32_t hash)
+{
+    if (!archive)
+        return NULL;
+
+    if (hash >= archive->header.hash_table_count) {
+        mpq_set_error(archive, "mpqfs_open_io_from_hash: hash %u out of range", hash);
+        return NULL;
+    }
+
+    const mpq_hash_entry_t *entry = &archive->hash_table[hash];
+    if (entry->block_index >= archive->header.block_table_count) {
+        mpq_set_error(archive, "mpqfs_open_io_from_hash: hash %u has invalid block index", hash);
+        return NULL;
+    }
+
+    mpq_stream_t *stream = mpq_stream_open(archive, entry->block_index);
+    if (!stream)
+        return NULL;
+
+    mpqfs_sdl_ctx_t *ctx = mpqfs_sdl_ctx_new(stream, NULL);
+    if (!ctx) {
+        mpq_set_error(archive, "mpqfs_open_io_from_hash: out of memory");
+        return NULL;
+    }
+
+    return mpqfs_sdl3_create_io(ctx, archive);
+}
+
 SDL_IOStream *mpqfs_open_io_threadsafe(mpqfs_archive_t *archive,
                                        const char *filename)
 {
@@ -338,6 +367,35 @@ SDL_RWops *mpqfs_open_rwops(mpqfs_archive_t *archive, const char *filename)
     return mpqfs_sdl2_create_rwops(ctx, archive);
 }
 
+SDL_RWops *mpqfs_open_rwops_from_hash(mpqfs_archive_t *archive, uint32_t hash)
+{
+    if (!archive)
+        return NULL;
+
+    if (hash >= archive->header.hash_table_count) {
+        mpq_set_error(archive, "mpqfs_open_rwops_from_hash: hash %u out of range", hash);
+        return NULL;
+    }
+
+    const mpq_hash_entry_t *entry = &archive->hash_table[hash];
+    if (entry->block_index >= archive->header.block_table_count) {
+        mpq_set_error(archive, "mpqfs_open_rwops_from_hash: hash %u has invalid block index", hash);
+        return NULL;
+    }
+
+    mpq_stream_t *stream = mpq_stream_open(archive, entry->block_index);
+    if (!stream)
+        return NULL;
+
+    mpqfs_sdl_ctx_t *ctx = mpqfs_sdl_ctx_new(stream, NULL);
+    if (!ctx) {
+        mpq_set_error(archive, "mpqfs_open_rwops_from_hash: out of memory");
+        return NULL;
+    }
+
+    return mpqfs_sdl2_create_rwops(ctx, archive);
+}
+
 SDL_RWops *mpqfs_open_rwops_threadsafe(mpqfs_archive_t *archive,
                                        const char *filename)
 {
@@ -464,6 +522,35 @@ SDL_RWops *mpqfs_open_rwops(mpqfs_archive_t *archive, const char *filename)
     mpqfs_sdl_ctx_t *ctx = mpqfs_sdl_ctx_new(stream, NULL);
     if (!ctx) {
         mpq_set_error(archive, "mpqfs_open_rwops: out of memory");
+        return NULL;
+    }
+
+    return mpqfs_sdl1_create_rwops(ctx, archive);
+}
+
+SDL_RWops *mpqfs_open_rwops_from_hash(mpqfs_archive_t *archive, uint32_t hash)
+{
+    if (!archive)
+        return NULL;
+
+    if (hash >= archive->header.hash_table_count) {
+        mpq_set_error(archive, "mpqfs_open_rwops_from_hash: hash %u out of range", hash);
+        return NULL;
+    }
+
+    const mpq_hash_entry_t *entry = &archive->hash_table[hash];
+    if (entry->block_index >= archive->header.block_table_count) {
+        mpq_set_error(archive, "mpqfs_open_rwops_from_hash: hash %u has invalid block index", hash);
+        return NULL;
+    }
+
+    mpq_stream_t *stream = mpq_stream_open(archive, entry->block_index);
+    if (!stream)
+        return NULL;
+
+    mpqfs_sdl_ctx_t *ctx = mpqfs_sdl_ctx_new(stream, NULL);
+    if (!ctx) {
+        mpq_set_error(archive, "mpqfs_open_rwops_from_hash: out of memory");
         return NULL;
     }
 

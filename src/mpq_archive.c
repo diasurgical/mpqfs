@@ -219,7 +219,7 @@ static mpq_block_entry_t *mpq_load_block_table(FILE *fp,
  * File lookup
  * ----------------------------------------------------------------------- */
 
-uint32_t mpq_lookup_file(const mpqfs_archive_t *archive, const char *filename)
+uint32_t mpq_lookup_hash_entry(const mpqfs_archive_t *archive, const char *filename)
 {
     if (!archive || !filename)
         return UINT32_MAX;
@@ -248,7 +248,7 @@ uint32_t mpq_lookup_file(const mpqfs_archive_t *archive, const char *filename)
         {
             /* Match — validate block index range. */
             if (entry->block_index < archive->header.block_table_count)
-                return entry->block_index;
+                return index;
 
             return UINT32_MAX;
         }
@@ -259,6 +259,14 @@ uint32_t mpq_lookup_file(const mpqfs_archive_t *archive, const char *filename)
             return UINT32_MAX;
         }
     }
+}
+
+uint32_t mpq_lookup_file(const mpqfs_archive_t *archive, const char *filename)
+{
+    uint32_t hash = mpq_lookup_hash_entry(archive, filename);
+    if (hash == UINT32_MAX)
+        return UINT32_MAX;
+    return archive->hash_table[hash].block_index;
 }
 
 /* -----------------------------------------------------------------------
@@ -440,6 +448,26 @@ bool mpqfs_has_file(mpqfs_archive_t *archive, const char *filename)
         return false;
 
     return (archive->block_table[bi].flags & MPQ_FILE_EXISTS) != 0;
+}
+
+uint32_t mpqfs_find_hash(mpqfs_archive_t *archive, const char *filename)
+{
+    return mpq_lookup_hash_entry(archive, filename);
+}
+
+bool mpqfs_has_file_hash(mpqfs_archive_t *archive, uint32_t hash)
+{
+    if (!archive)
+        return false;
+
+    if (hash >= archive->header.hash_table_count)
+        return false;
+
+    const mpq_hash_entry_t *entry = &archive->hash_table[hash];
+    if (entry->block_index >= archive->header.block_table_count)
+        return false;
+
+    return (archive->block_table[entry->block_index].flags & MPQ_FILE_EXISTS) != 0;
 }
 
 size_t mpqfs_file_size(mpqfs_archive_t *archive, const char *filename)

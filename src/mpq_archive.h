@@ -130,6 +130,16 @@ typedef struct mpqfs_archive mpqfs_archive_t;
 uint32_t mpq_lookup_file(const mpqfs_archive_t *archive, const char *filename);
 
 /*
+ * Look up a filename in the archive's hash table.
+ * Returns the hash table entry index on success, or UINT32_MAX if not found.
+ *
+ * This is the position within the hash table where the matching entry was
+ * found (after open-addressing probing).  The block_index can be read from
+ * archive->hash_table[result].block_index.
+ */
+uint32_t mpq_lookup_hash_entry(const mpqfs_archive_t *archive, const char *filename);
+
+/*
  * Set the archive's error string (printf-style).
  */
 void mpq_set_error(mpqfs_archive_t *archive, const char *fmt, ...)

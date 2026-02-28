@@ -215,6 +215,37 @@ MPQFS_API void mpqfs_close(mpqfs_archive_t *archive);
 MPQFS_API bool mpqfs_has_file(mpqfs_archive_t *archive, const char *filename);
 
 /**
+ * Look up a filename and return its hash table entry index.
+ *
+ * This performs the full hash-table probe (computing the table index,
+ * name_a, and name_b hashes internally) and returns the position within
+ * the archive's hash table where the matching entry was found.
+ *
+ * The returned value can be passed to mpqfs_has_file_hash(),
+ * mpqfs_open_io_from_hash(), or mpqfs_open_rwops_from_hash() to avoid
+ * redundant hashing on subsequent operations for the same file.
+ *
+ * @param archive   Open archive handle.
+ * @param filename  Archive-relative path (e.g. "levels\\l1data\\l1.min").
+ * @return          Hash table entry index, or UINT32_MAX if not found.
+ */
+MPQFS_API uint32_t mpqfs_find_hash(mpqfs_archive_t *archive, const char *filename);
+
+/**
+ * Check whether a hash table entry refers to a valid, existing file.
+ *
+ * The hash parameter is a hash table entry index — the position within
+ * the archive's hash table where a file's entry was found (e.g. as
+ * returned by an earlier lookup).  This allows callers that have already
+ * resolved a filename to a hash table slot to skip redundant hashing.
+ *
+ * @param archive  Open archive handle.
+ * @param hash     Hash table entry index.
+ * @return         true if the entry refers to a valid, existing file.
+ */
+MPQFS_API bool mpqfs_has_file_hash(mpqfs_archive_t *archive, uint32_t hash);
+
+/**
  * Return the uncompressed size of a file in the archive.
  *
  * @param archive   Open archive handle.
@@ -282,6 +313,23 @@ MPQFS_API SDL_IOStream *mpqfs_open_io(mpqfs_archive_t *archive,
                                       const char *filename);
 
 /**
+ * Create an SDL 3 IOStream for a file identified by hash table entry.
+ *
+ * This is the hash-based counterpart of mpqfs_open_io().  The hash
+ * parameter is a hash table entry index (see mpqfs_has_file_hash()).
+ *
+ * @note Encrypted files are NOT supported by this function because the
+ *       filename is not available for key derivation.  For Diablo 1
+ *       assets (which are never encrypted) this is not a limitation.
+ *
+ * @param archive  Open archive handle.
+ * @param hash     Hash table entry index.
+ * @return         A seekable, read-only SDL_IOStream, or NULL on error.
+ */
+MPQFS_API SDL_IOStream *mpqfs_open_io_from_hash(mpqfs_archive_t *archive,
+                                                uint32_t hash);
+
+/**
  * Create an SDL 3 IOStream that owns an independent archive clone.
  *
  * The returned stream is fully self-contained and safe to use from any
@@ -309,6 +357,23 @@ MPQFS_API SDL_RWops *mpqfs_open_rwops(mpqfs_archive_t *archive,
                                       const char *filename);
 
 /**
+ * Create an SDL 2 RWops for a file identified by hash table entry.
+ *
+ * This is the hash-based counterpart of mpqfs_open_rwops().  The hash
+ * parameter is a hash table entry index (see mpqfs_has_file_hash()).
+ *
+ * @note Encrypted files are NOT supported by this function because the
+ *       filename is not available for key derivation.  For Diablo 1
+ *       assets (which are never encrypted) this is not a limitation.
+ *
+ * @param archive  Open archive handle.
+ * @param hash     Hash table entry index.
+ * @return         A seekable, read-only SDL_RWops, or NULL on error.
+ */
+MPQFS_API SDL_RWops *mpqfs_open_rwops_from_hash(mpqfs_archive_t *archive,
+                                                uint32_t hash);
+
+/**
  * Create an SDL 2 RWops that owns an independent archive clone.
  *
  * The returned stream is fully self-contained and safe to use from any
@@ -334,6 +399,23 @@ MPQFS_API SDL_RWops *mpqfs_open_rwops_threadsafe(mpqfs_archive_t *archive,
  */
 MPQFS_API SDL_RWops *mpqfs_open_rwops(mpqfs_archive_t *archive,
                                       const char *filename);
+
+/**
+ * Create an SDL 1.2 RWops for a file identified by hash table entry.
+ *
+ * This is the hash-based counterpart of mpqfs_open_rwops().  The hash
+ * parameter is a hash table entry index (see mpqfs_has_file_hash()).
+ *
+ * @note Encrypted files are NOT supported by this function because the
+ *       filename is not available for key derivation.  For Diablo 1
+ *       assets (which are never encrypted) this is not a limitation.
+ *
+ * @param archive  Open archive handle.
+ * @param hash     Hash table entry index.
+ * @return         A seekable, read-only SDL_RWops, or NULL on error.
+ */
+MPQFS_API SDL_RWops *mpqfs_open_rwops_from_hash(mpqfs_archive_t *archive,
+                                                uint32_t hash);
 
 /**
  * Create an SDL 1.2 RWops that owns an independent archive clone.
