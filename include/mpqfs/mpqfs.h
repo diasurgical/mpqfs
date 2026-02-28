@@ -355,6 +355,23 @@ MPQFS_API SDL_IOStream *mpqfs_open_io_from_hash(mpqfs_archive_t *archive,
 MPQFS_API SDL_IOStream *mpqfs_open_io_threadsafe(mpqfs_archive_t *archive,
                                                  const char *filename);
 
+/**
+ * Create an SDL 3 IOStream that owns an independent archive clone,
+ * using a pre-resolved hash table entry index.
+ *
+ * This is the hash-based counterpart of mpqfs_open_io_threadsafe().
+ *
+ * @note Encrypted files are NOT supported by this function because the
+ *       filename is not available for key derivation.  For Diablo 1
+ *       assets (which are never encrypted) this is not a limitation.
+ *
+ * @param archive  Open archive handle (used to clone).
+ * @param hash     Hash table entry index.
+ * @return         A seekable, read-only SDL_IOStream, or NULL on error.
+ */
+MPQFS_API SDL_IOStream *mpqfs_open_io_threadsafe_from_hash(
+    mpqfs_archive_t *archive, uint32_t hash);
+
 #endif /* MPQFS_USE_SDL3 */
 
 #if defined(MPQFS_USE_SDL2) && MPQFS_USE_SDL2
@@ -399,6 +416,23 @@ MPQFS_API SDL_RWops *mpqfs_open_rwops_from_hash(mpqfs_archive_t *archive,
 MPQFS_API SDL_RWops *mpqfs_open_rwops_threadsafe(mpqfs_archive_t *archive,
                                                  const char *filename);
 
+/**
+ * Create an SDL 2 RWops that owns an independent archive clone,
+ * using a pre-resolved hash table entry index.
+ *
+ * This is the hash-based counterpart of mpqfs_open_rwops_threadsafe().
+ *
+ * @note Encrypted files are NOT supported by this function because the
+ *       filename is not available for key derivation.  For Diablo 1
+ *       assets (which are never encrypted) this is not a limitation.
+ *
+ * @param archive  Open archive handle (used to clone).
+ * @param hash     Hash table entry index.
+ * @return         A seekable, read-only SDL_RWops, or NULL on error.
+ */
+MPQFS_API SDL_RWops *mpqfs_open_rwops_threadsafe_from_hash(
+    mpqfs_archive_t *archive, uint32_t hash);
+
 #endif /* MPQFS_USE_SDL2 */
 
 #if defined(MPQFS_USE_SDL1) && MPQFS_USE_SDL1
@@ -442,6 +476,23 @@ MPQFS_API SDL_RWops *mpqfs_open_rwops_from_hash(mpqfs_archive_t *archive,
  */
 MPQFS_API SDL_RWops *mpqfs_open_rwops_threadsafe(mpqfs_archive_t *archive,
                                                  const char *filename);
+
+/**
+ * Create an SDL 1.2 RWops that owns an independent archive clone,
+ * using a pre-resolved hash table entry index.
+ *
+ * This is the hash-based counterpart of mpqfs_open_rwops_threadsafe().
+ *
+ * @note Encrypted files are NOT supported by this function because the
+ *       filename is not available for key derivation.  For Diablo 1
+ *       assets (which are never encrypted) this is not a limitation.
+ *
+ * @param archive  Open archive handle (used to clone).
+ * @param hash     Hash table entry index.
+ * @return         A seekable, read-only SDL_RWops, or NULL on error.
+ */
+MPQFS_API SDL_RWops *mpqfs_open_rwops_threadsafe_from_hash(
+    mpqfs_archive_t *archive, uint32_t hash);
 
 #endif /* MPQFS_USE_SDL1 */
 
