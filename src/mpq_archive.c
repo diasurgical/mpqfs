@@ -486,6 +486,25 @@ size_t mpqfs_file_size(mpqfs_archive_t *archive, const char *filename)
     return (size_t)block->file_size;
 }
 
+size_t mpqfs_file_size_from_hash(mpqfs_archive_t *archive, uint32_t hash)
+{
+    if (!archive)
+        return 0;
+
+    if (hash >= archive->header.hash_table_count)
+        return 0;
+
+    const mpq_hash_entry_t *entry = &archive->hash_table[hash];
+    if (entry->block_index >= archive->header.block_table_count)
+        return 0;
+
+    const mpq_block_entry_t *block = &archive->block_table[entry->block_index];
+    if (!(block->flags & MPQ_FILE_EXISTS))
+        return 0;
+
+    return (size_t)block->file_size;
+}
+
 /* -----------------------------------------------------------------------
  * Public API: whole-file read
  * ----------------------------------------------------------------------- */

@@ -222,8 +222,9 @@ MPQFS_API bool mpqfs_has_file(mpqfs_archive_t *archive, const char *filename);
  * the archive's hash table where the matching entry was found.
  *
  * The returned value can be passed to mpqfs_has_file_hash(),
- * mpqfs_open_io_from_hash(), or mpqfs_open_rwops_from_hash() to avoid
- * redundant hashing on subsequent operations for the same file.
+ * mpqfs_file_size_from_hash(), mpqfs_open_io_from_hash(), or
+ * mpqfs_open_rwops_from_hash() to avoid redundant hashing on
+ * subsequent operations for the same file.
  *
  * @param archive   Open archive handle.
  * @param filename  Archive-relative path (e.g. "levels\\l1data\\l1.min").
@@ -253,6 +254,18 @@ MPQFS_API bool mpqfs_has_file_hash(mpqfs_archive_t *archive, uint32_t hash);
  * @return          Uncompressed size in bytes, or 0 if the file is not found.
  */
 MPQFS_API size_t mpqfs_file_size(mpqfs_archive_t *archive, const char *filename);
+
+/**
+ * @brief Return the uncompressed size of the file identified by hash.
+ *
+ * This is the hash-based counterpart of mpqfs_file_size().  The @p hash
+ * parameter is a hash table entry index obtained from mpqfs_find_hash().
+ *
+ * @param archive   Open archive handle.
+ * @param hash      Hash table entry index.
+ * @return          Uncompressed size in bytes, or 0 on error.
+ */
+MPQFS_API size_t mpqfs_file_size_from_hash(mpqfs_archive_t *archive, uint32_t hash);
 
 /* -----------------------------------------------------------------------
  * Whole-file reads
