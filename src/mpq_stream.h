@@ -141,4 +141,7 @@ size_t mpq_stream_size(mpq_stream_t *stream);
 }
 #endif
 
+typedef mpq_stream_t mpqfs_stream_t;
+#define MPQFS_STREAM_T_DEFINED
+
 #endif /* MPQFS_MPQ_STREAM_H */

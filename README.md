@@ -221,6 +221,42 @@ size_t mpqfs_read_file_into(mpqfs_archive_t *archive, const char *filename,
                             void *buffer, size_t buffer_size);
 ```
 
+### File streaming
+
+```c
+/* Opaque stream handle */
+typedef struct mpq_stream mpqfs_stream_t;
+
+/* Open a seekable, read-only stream to a file inside the archive.
+ * Decompresses sectors on demand — only one sector is held in memory.
+ * The archive must remain open for the lifetime of the stream. */
+mpqfs_stream_t *mpqfs_stream_open(mpqfs_archive_t *archive,
+                                  const char *filename);
+
+/* Open a stream using a pre-resolved hash table entry index.
+ * Avoids redundant hashing when the caller already has the index
+ * from mpqfs_find_hash().  Encrypted files are NOT supported. */
+mpqfs_stream_t *mpqfs_stream_open_from_hash(mpqfs_archive_t *archive,
+                                            uint32_t hash);
+
+/* Close a stream and free all associated memory.
+ * Does NOT close the parent archive.  NULL is safely ignored. */
+void mpqfs_stream_close(mpqfs_stream_t *stream);
+
+/* Read up to count bytes into buf.  Returns bytes read, or (size_t)-1 on error. */
+size_t mpqfs_stream_read(mpqfs_stream_t *stream, void *buf, size_t count);
+
+/* Seek within the uncompressed file (SEEK_SET, SEEK_CUR, SEEK_END).
+ * Returns the new absolute position, or -1 on error. */
+int64_t mpqfs_stream_seek(mpqfs_stream_t *stream, int64_t offset, int whence);
+
+/* Return the current read position. */
+int64_t mpqfs_stream_tell(mpqfs_stream_t *stream);
+
+/* Return the total uncompressed size of the streamed file. */
+size_t mpqfs_stream_size(mpqfs_stream_t *stream);
+```
+
 ### Archive writing
 
 ```c

@@ -2144,6 +2144,121 @@ static void TestHashMultiFile(void)
 	TEST_END();
 }
 
+static void TestStreamApi(void)
+{
+	TEST_BEGIN("stream_api");
+
+	const char *tmpPath = "/tmp/mpqfs_test_stream_api.mpq";
+	const char *filename = "levels\\l1data\\test.bin";
+	/* Build a test payload larger than one sector to exercise multi-sector streaming. */
+	uint8_t fileData[8192];
+	for (size_t i = 0; i < sizeof(fileData); i++)
+		fileData[i] = (uint8_t)(i & 0xFF);
+	size_t fileDataLen = sizeof(fileData);
+
+	/* Create an archive with one file. */
+	mpqfs_writer_t *writer = mpqfs_writer_create(tmpPath, 16);
+	ASSERT_NOT_NULL(writer);
+	ASSERT_TRUE(mpqfs_writer_add_file(writer, filename, fileData, fileDataLen));
+	ASSERT_TRUE(mpqfs_writer_close(writer));
+
+	/* Open it back. */
+	mpqfs_archive_t *archive = mpqfs_open(tmpPath);
+	if (!archive) {
+		printf("    (mpqfs_open failed: %s)\n", mpqfs_last_error());
+	}
+	ASSERT_NOT_NULL(archive);
+
+	/* 1. Open a stream by filename. */
+	mpqfs_stream_t *stream = mpqfs_stream_open(archive, filename);
+	ASSERT_NOT_NULL(stream);
+
+	/* 2. Check mpqfs_stream_size(). */
+	ASSERT_EQ_SZ(mpqfs_stream_size(stream), fileDataLen);
+
+	/* 3. Read the full file via mpqfs_stream_read() and compare. */
+	uint8_t readBuf[8192];
+	memset(readBuf, 0, sizeof(readBuf));
+	size_t totalRead = 0;
+	while (totalRead < fileDataLen) {
+		size_t n = mpqfs_stream_read(stream, readBuf + totalRead,
+		    fileDataLen - totalRead);
+		ASSERT_TRUE(n != (size_t)-1);
+		if (n == 0)
+			break;
+		totalRead += n;
+	}
+	ASSERT_EQ_SZ(totalRead, fileDataLen);
+	ASSERT_TRUE(memcmp(readBuf, fileData, fileDataLen) == 0);
+
+	/* 4. Seek to various positions and verify mpqfs_stream_tell(). */
+	int64_t pos;
+
+	/* SEEK_SET to beginning */
+	pos = mpqfs_stream_seek(stream, 0, SEEK_SET);
+	ASSERT_TRUE(pos == 0);
+	ASSERT_TRUE(mpqfs_stream_tell(stream) == 0);
+
+	/* SEEK_SET to middle */
+	pos = mpqfs_stream_seek(stream, 4096, SEEK_SET);
+	ASSERT_TRUE(pos == 4096);
+	ASSERT_TRUE(mpqfs_stream_tell(stream) == 4096);
+
+	/* Read a few bytes from the middle and verify content. */
+	uint8_t midBuf[16];
+	size_t midRead = mpqfs_stream_read(stream, midBuf, 16);
+	ASSERT_EQ_SZ(midRead, 16);
+	ASSERT_TRUE(memcmp(midBuf, fileData + 4096, 16) == 0);
+	ASSERT_TRUE(mpqfs_stream_tell(stream) == 4096 + 16);
+
+	/* SEEK_CUR backward */
+	pos = mpqfs_stream_seek(stream, -16, SEEK_CUR);
+	ASSERT_TRUE(pos == 4096);
+
+	/* SEEK_END */
+	pos = mpqfs_stream_seek(stream, 0, SEEK_END);
+	ASSERT_TRUE(pos == (int64_t)fileDataLen);
+
+	/* SEEK_END with negative offset */
+	pos = mpqfs_stream_seek(stream, -100, SEEK_END);
+	ASSERT_TRUE(pos == (int64_t)(fileDataLen - 100));
+
+	/* Read from near the end */
+	uint8_t endBuf[100];
+	size_t endRead = mpqfs_stream_read(stream, endBuf, 100);
+	ASSERT_EQ_SZ(endRead, 100);
+	ASSERT_TRUE(memcmp(endBuf, fileData + fileDataLen - 100, 100) == 0);
+
+	mpqfs_stream_close(stream);
+
+	/* 5. Open a stream by hash with mpqfs_stream_open_from_hash(). */
+	uint32_t hash = mpqfs_find_hash(archive, filename);
+	ASSERT_TRUE(hash != UINT32_MAX);
+
+	mpqfs_stream_t *stream2 = mpqfs_stream_open_from_hash(archive, hash);
+	ASSERT_NOT_NULL(stream2);
+	ASSERT_EQ_SZ(mpqfs_stream_size(stream2), fileDataLen);
+
+	/* Read the first 32 bytes and verify. */
+	uint8_t hashBuf[32];
+	size_t hashRead = mpqfs_stream_read(stream2, hashBuf, 32);
+	ASSERT_EQ_SZ(hashRead, 32);
+	ASSERT_TRUE(memcmp(hashBuf, fileData, 32) == 0);
+
+	mpqfs_stream_close(stream2);
+
+	/* 6. mpqfs_stream_close(NULL) should be safe. */
+	mpqfs_stream_close(NULL);
+
+	/* Non-existent file should return NULL. */
+	ASSERT_NULL(mpqfs_stream_open(archive, "nonexistent"));
+
+	mpqfs_close(archive);
+	remove(tmpPath);
+
+	TEST_END();
+}
+
 static const char *FlagsToStr(uint32_t flags, char *buf, size_t bufSize)
 {
 	buf[0] = '\0';
@@ -2309,6 +2424,9 @@ int main(int argc, char *argv[])
 	TestHasFileHash();
 	TestFindHashSynthetic();
 	TestHashMultiFile();
+
+	/* Stream API tests */
+	TestStreamApi();
 
 	/* Work Item 1 — new public API tests */
 	TestCloneRoundtrip();

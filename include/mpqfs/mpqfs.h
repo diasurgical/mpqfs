@@ -99,6 +99,9 @@ typedef struct mpqfs_archive mpqfs_archive_t;
 #ifndef MPQFS_WRITER_T_DEFINED
 typedef struct mpqfs_writer mpqfs_writer_t;
 #endif
+#ifndef MPQFS_STREAM_T_DEFINED
+typedef struct mpq_stream mpqfs_stream_t;
+#endif
 
 /* -----------------------------------------------------------------------
  * Archive lifecycle (reading)
@@ -277,6 +280,97 @@ MPQFS_API void *mpqfs_read_file(mpqfs_archive_t *archive, const char *filename,
 MPQFS_API size_t mpqfs_read_file_into(mpqfs_archive_t *archive,
     const char *filename,
     void *buffer, size_t buffer_size);
+
+/* -----------------------------------------------------------------------
+ * File streaming
+ *
+ * These functions provide seekable, read-only access to individual files
+ * inside an MPQ archive without reading the entire file into memory.
+ * Only one sector's worth of data is held in memory at a time.
+ *
+ * The archive must remain open for the lifetime of the stream.
+ * Closing a stream does NOT close the parent archive.
+ * ----------------------------------------------------------------------- */
+
+/**
+ * Open a seekable, read-only stream to a file inside the archive.
+ *
+ * The stream decompresses sectors on demand, so only one sector's worth
+ * of data is held in memory at a time — large files are NOT fully loaded.
+ *
+ * The archive must remain open for the lifetime of the stream.
+ * Closing the stream does NOT close the archive.
+ *
+ * @param archive   Open archive handle.
+ * @param filename  Archive-relative path (NUL-terminated).
+ * @return          Stream handle, or NULL on error (see mpqfs_last_error()).
+ */
+MPQFS_API mpqfs_stream_t *mpqfs_stream_open(mpqfs_archive_t *archive,
+    const char *filename);
+
+/**
+ * Open a stream using a pre-resolved hash table entry index.
+ *
+ * This avoids redundant filename hashing when the caller has already
+ * resolved the file via mpqfs_find_hash().
+ *
+ * @note Encrypted files are NOT supported by this function because the
+ *       filename is not available for key derivation.  For Diablo 1
+ *       assets (which are never encrypted) this is not a limitation.
+ *
+ * @param archive  Open archive handle.
+ * @param hash     Hash table entry index (from mpqfs_find_hash()).
+ * @return         Stream handle, or NULL on error.
+ */
+MPQFS_API mpqfs_stream_t *mpqfs_stream_open_from_hash(mpqfs_archive_t *archive,
+    uint32_t hash);
+
+/**
+ * Close a stream and free all associated memory.
+ *
+ * Does NOT close the parent archive.
+ *
+ * @param stream  Stream handle (NULL is safely ignored).
+ */
+MPQFS_API void mpqfs_stream_close(mpqfs_stream_t *stream);
+
+/**
+ * Read up to @p count bytes from the stream into @p buf.
+ *
+ * Advances the stream position by the number of bytes read.
+ *
+ * @param stream  Stream handle.
+ * @param buf     Destination buffer.
+ * @param count   Maximum number of bytes to read.
+ * @return        Number of bytes read, or (size_t)-1 on error.
+ */
+MPQFS_API size_t mpqfs_stream_read(mpqfs_stream_t *stream, void *buf, size_t count);
+
+/**
+ * Seek to an absolute position within the uncompressed file.
+ *
+ * @param stream  Stream handle.
+ * @param offset  Byte offset (interpretation depends on @p whence).
+ * @param whence  SEEK_SET, SEEK_CUR, or SEEK_END.
+ * @return        New absolute position, or -1 on error.
+ */
+MPQFS_API int64_t mpqfs_stream_seek(mpqfs_stream_t *stream, int64_t offset, int whence);
+
+/**
+ * Return the current read position within the uncompressed file.
+ *
+ * @param stream  Stream handle.
+ * @return        Current position in bytes.
+ */
+MPQFS_API int64_t mpqfs_stream_tell(mpqfs_stream_t *stream);
+
+/**
+ * Return the total uncompressed size of the streamed file.
+ *
+ * @param stream  Stream handle.
+ * @return        Total size in bytes.
+ */
+MPQFS_API size_t mpqfs_stream_size(mpqfs_stream_t *stream);
 
 /* -----------------------------------------------------------------------
  * Archive writing (Diablo 1 save-game compatible)

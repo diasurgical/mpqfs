@@ -50,6 +50,7 @@ set(MPQFS_SOURCES
     src/mpq_crypto.c
     src/mpq_pkware.c
     src/mpq_stream.c
+    src/mpq_stream_api.c
     src/mpq_writer.c
 )
 
