@@ -18,6 +18,12 @@
  *   [Block table — hash_table_size × 16 bytes, encrypted]
  *   [Hash table  — hash_table_size × 16 bytes, encrypted]
  *   [File data   — PKWARE implode compressed, with sector offset tables]
+ *
+ * File data is streamed to disk during mpqfs_writer_add_file() so that
+ * peak RAM usage does not scale with the total size of all files.  Only
+ * per-file metadata (filename, offset, sizes, flags) is kept in memory.
+ * The header and tables are written (or rewritten) during
+ * mpqfs_writer_close() once all metadata is known.
  */
 
 #ifndef MPQFS_MPQ_WRITER_H
@@ -35,13 +41,15 @@ extern "C" {
 #endif
 
 /* -----------------------------------------------------------------------
- * Per-file entry stored in the writer before finalisation
+ * Per-file metadata stored in the writer (no file content buffered)
  * ----------------------------------------------------------------------- */
 
 struct mpqfs_writer_file {
-	char *filename; /* Archive-relative path (owned, heap-allocated)   */
-	uint8_t *data;  /* File contents (owned, heap-allocated copy)      */
-	uint32_t size;  /* Uncompressed (= on-disk) size in bytes         */
+	char *filename;           /* Archive-relative path (owned, heap-allocated) */
+	uint32_t offset;          /* Offset of file data from archive start       */
+	uint32_t compressed_size; /* Total on-disk size (offset table + sectors)   */
+	uint32_t file_size;       /* Original uncompressed size                    */
+	uint32_t flags;           /* Block flags (EXISTS, IMPLODE, etc.)           */
 };
 typedef struct mpqfs_writer_file mpqfs_writer_file_t;
 
@@ -58,10 +66,13 @@ struct mpqfs_writer {
 	uint32_t hash_table_size;   /* Number of hash table entries (power of 2)*/
 	uint16_t sector_size_shift; /* Sector size = 512 << shift (default 3)   */
 
-	/* Dynamic array of files to be written. */
+	/* Dynamic array of file metadata (no file content stored). */
 	mpqfs_writer_file_t *files;
 	uint32_t file_count;    /* Number of files added so far             */
 	uint32_t file_capacity; /* Allocated capacity of the files array    */
+
+	uint32_t data_start;  /* Offset where file data begins (after hdr+tables) */
+	uint32_t data_cursor;  /* Current write offset for next file's data        */
 
 	char error[256]; /* Last error message                       */
 };

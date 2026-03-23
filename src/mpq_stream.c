@@ -1,5 +1,5 @@
 /*
- * mpqfs — minimal MPQ v1 reader with SDL integration
+ * mpqfs — minimal MPQ v1 reader/writer
  * SPDX-License-Identifier: MIT
  *
  * Sector-based file streaming with PKWARE DCL / zlib decompression
@@ -233,7 +233,7 @@ static int MpqStreamLoadSector(mpq_stream_t *stream, uint32_t sectorIdx)
 				mpq_set_error(archive, "mpq_stream: zlib decompression "
 				                       "required but mpqfs was built without zlib "
 				                       "support (sector %u)",
-				    sector_idx);
+				    sectorIdx);
 				return -1;
 #endif
 			}
@@ -256,7 +256,7 @@ static int MpqStreamLoadSector(mpq_stream_t *stream, uint32_t sectorIdx)
 				mpq_set_error(archive, "mpq_stream: bzip2 decompression "
 				                       "required but mpqfs was built without bzip2 "
 				                       "support (sector %u)",
-				    sector_idx);
+				    sectorIdx);
 				return -1;
 #endif
 			}

@@ -1,5 +1,5 @@
 /*
- * mpqfs — Minimal MPQ v1 archive reader/writer with SDL integration
+ * mpqfs — Minimal MPQ v1 archive reader/writer
  * SPDX-License-Identifier: MIT
  *
  * Public API header.
@@ -9,7 +9,6 @@
  *   - File existence and size queries
  *   - Whole-file reads into caller-allocated or library-allocated buffers
  *   - Archive creation / writing (Diablo 1 save-game compatible)
- *   - SDL streaming adapters (SDL_RWops for SDL 1.2 & 2, SDL_IOStream for SDL 3)
  *   - Error reporting
  *
  * The library is written in C99 and compiles cleanly as C++11 or later
@@ -51,21 +50,6 @@
 #else
 #define MPQFS_HAS_FDOPEN 0
 #endif
-#endif
-
-/* -----------------------------------------------------------------------
- * SDL header inclusion (driven by CMake -DMPQFS_USE_SDLx=1)
- * ----------------------------------------------------------------------- */
-
-#if defined(MPQFS_USE_SDL3) && MPQFS_USE_SDL3
-#include <SDL3/SDL.h>
-#include <SDL3/SDL_iostream.h>
-#elif defined(MPQFS_USE_SDL2) && MPQFS_USE_SDL2
-#include <SDL.h>
-#include <SDL_rwops.h>
-#elif defined(MPQFS_USE_SDL1) && MPQFS_USE_SDL1
-#include <SDL.h>
-#include <SDL_rwops.h>
 #endif
 
 /* -----------------------------------------------------------------------
@@ -171,7 +155,7 @@ MPQFS_API mpqfs_archive_t *mpqfs_open_fd(int fd);
  * and can be read concurrently with the original.  The clone must be
  * closed independently with mpqfs_close().
  *
- * This is needed for thread-safe SDL streaming: the audio thread gets
+ * This is needed for thread-safe streaming: the audio thread gets
  * a cloned archive so its fseek/fread calls don't race with the main
  * thread.
  *
@@ -185,9 +169,6 @@ MPQFS_API mpqfs_archive_t *mpqfs_clone(const mpqfs_archive_t *archive);
 
 /**
  * Close an archive and free all associated resources.
- *
- * Any SDL streams (SDL_RWops / SDL_IOStream) created from this archive
- * must be closed *before* the archive itself.
  *
  * If the archive was opened with mpqfs_open() or mpqfs_open_fd(), the
  * underlying file is closed.  If opened with mpqfs_open_fp(), the FILE*
@@ -296,205 +277,6 @@ MPQFS_API void *mpqfs_read_file(mpqfs_archive_t *archive, const char *filename,
 MPQFS_API size_t mpqfs_read_file_into(mpqfs_archive_t *archive,
     const char *filename,
     void *buffer, size_t buffer_size);
-
-/* -----------------------------------------------------------------------
- * SDL streaming adapters
- *
- * These functions create a seekable, read-only stream backed by a single
- * file inside the archive.  Writes always fail.
- *
- * Closing the stream frees its internal resources but does NOT close the
- * parent archive.  The archive must remain open for the lifetime of the
- * stream.
- *
- * The "threadsafe" variants clone the archive internally so the returned
- * stream owns an independent FILE* and can be used from any thread
- * without racing with the original archive's reads.  The cloned archive
- * is closed automatically when the stream is closed.
- * ----------------------------------------------------------------------- */
-
-#if defined(MPQFS_USE_SDL3) && MPQFS_USE_SDL3
-
-/**
- * Create an SDL 3 IOStream for a file in the archive.
- *
- * @param archive   Open archive handle.
- * @param filename  Archive-relative path.
- * @return          A seekable, read-only SDL_IOStream, or NULL on error.
- */
-MPQFS_API SDL_IOStream *mpqfs_open_io(mpqfs_archive_t *archive,
-    const char *filename);
-
-/**
- * Create an SDL 3 IOStream for a file identified by hash table entry.
- *
- * This is the hash-based counterpart of mpqfs_open_io().  The hash
- * parameter is a hash table entry index (see mpqfs_has_file_hash()).
- *
- * @note Encrypted files are NOT supported by this function because the
- *       filename is not available for key derivation.  For Diablo 1
- *       assets (which are never encrypted) this is not a limitation.
- *
- * @param archive  Open archive handle.
- * @param hash     Hash table entry index.
- * @return         A seekable, read-only SDL_IOStream, or NULL on error.
- */
-MPQFS_API SDL_IOStream *mpqfs_open_io_from_hash(mpqfs_archive_t *archive,
-    uint32_t hash);
-
-/**
- * Create an SDL 3 IOStream that owns an independent archive clone.
- *
- * The returned stream is fully self-contained and safe to use from any
- * thread.  Closing the stream closes the internal clone.
- *
- * @param archive   Open archive handle (used to clone).
- * @param filename  Archive-relative path.
- * @return          A seekable, read-only SDL_IOStream, or NULL on error.
- */
-MPQFS_API SDL_IOStream *mpqfs_open_io_threadsafe(mpqfs_archive_t *archive,
-    const char *filename);
-
-/**
- * Create an SDL 3 IOStream that owns an independent archive clone,
- * using a pre-resolved hash table entry index.
- *
- * This is the hash-based counterpart of mpqfs_open_io_threadsafe().
- *
- * @note Encrypted files are NOT supported by this function because the
- *       filename is not available for key derivation.  For Diablo 1
- *       assets (which are never encrypted) this is not a limitation.
- *
- * @param archive  Open archive handle (used to clone).
- * @param hash     Hash table entry index.
- * @return         A seekable, read-only SDL_IOStream, or NULL on error.
- */
-MPQFS_API SDL_IOStream *mpqfs_open_io_threadsafe_from_hash(
-    mpqfs_archive_t *archive, uint32_t hash);
-
-#endif /* MPQFS_USE_SDL3 */
-
-#if defined(MPQFS_USE_SDL2) && MPQFS_USE_SDL2
-
-/**
- * Create an SDL 2 RWops for a file in the archive.
- *
- * @param archive   Open archive handle.
- * @param filename  Archive-relative path.
- * @return          A seekable, read-only SDL_RWops, or NULL on error.
- */
-MPQFS_API SDL_RWops *mpqfs_open_rwops(mpqfs_archive_t *archive,
-    const char *filename);
-
-/**
- * Create an SDL 2 RWops for a file identified by hash table entry.
- *
- * This is the hash-based counterpart of mpqfs_open_rwops().  The hash
- * parameter is a hash table entry index (see mpqfs_has_file_hash()).
- *
- * @note Encrypted files are NOT supported by this function because the
- *       filename is not available for key derivation.  For Diablo 1
- *       assets (which are never encrypted) this is not a limitation.
- *
- * @param archive  Open archive handle.
- * @param hash     Hash table entry index.
- * @return         A seekable, read-only SDL_RWops, or NULL on error.
- */
-MPQFS_API SDL_RWops *mpqfs_open_rwops_from_hash(mpqfs_archive_t *archive,
-    uint32_t hash);
-
-/**
- * Create an SDL 2 RWops that owns an independent archive clone.
- *
- * The returned stream is fully self-contained and safe to use from any
- * thread.  Closing the stream closes the internal clone.
- *
- * @param archive   Open archive handle (used to clone).
- * @param filename  Archive-relative path.
- * @return          A seekable, read-only SDL_RWops, or NULL on error.
- */
-MPQFS_API SDL_RWops *mpqfs_open_rwops_threadsafe(mpqfs_archive_t *archive,
-    const char *filename);
-
-/**
- * Create an SDL 2 RWops that owns an independent archive clone,
- * using a pre-resolved hash table entry index.
- *
- * This is the hash-based counterpart of mpqfs_open_rwops_threadsafe().
- *
- * @note Encrypted files are NOT supported by this function because the
- *       filename is not available for key derivation.  For Diablo 1
- *       assets (which are never encrypted) this is not a limitation.
- *
- * @param archive  Open archive handle (used to clone).
- * @param hash     Hash table entry index.
- * @return         A seekable, read-only SDL_RWops, or NULL on error.
- */
-MPQFS_API SDL_RWops *mpqfs_open_rwops_threadsafe_from_hash(
-    mpqfs_archive_t *archive, uint32_t hash);
-
-#endif /* MPQFS_USE_SDL2 */
-
-#if defined(MPQFS_USE_SDL1) && MPQFS_USE_SDL1
-
-/**
- * Create an SDL 1.2 RWops for a file in the archive.
- *
- * @param archive   Open archive handle.
- * @param filename  Archive-relative path.
- * @return          A seekable, read-only SDL_RWops, or NULL on error.
- */
-MPQFS_API SDL_RWops *mpqfs_open_rwops(mpqfs_archive_t *archive,
-    const char *filename);
-
-/**
- * Create an SDL 1.2 RWops for a file identified by hash table entry.
- *
- * This is the hash-based counterpart of mpqfs_open_rwops().  The hash
- * parameter is a hash table entry index (see mpqfs_has_file_hash()).
- *
- * @note Encrypted files are NOT supported by this function because the
- *       filename is not available for key derivation.  For Diablo 1
- *       assets (which are never encrypted) this is not a limitation.
- *
- * @param archive  Open archive handle.
- * @param hash     Hash table entry index.
- * @return         A seekable, read-only SDL_RWops, or NULL on error.
- */
-MPQFS_API SDL_RWops *mpqfs_open_rwops_from_hash(mpqfs_archive_t *archive,
-    uint32_t hash);
-
-/**
- * Create an SDL 1.2 RWops that owns an independent archive clone.
- *
- * The returned stream is fully self-contained and safe to use from any
- * thread.  Closing the stream closes the internal clone.
- *
- * @param archive   Open archive handle (used to clone).
- * @param filename  Archive-relative path.
- * @return          A seekable, read-only SDL_RWops, or NULL on error.
- */
-MPQFS_API SDL_RWops *mpqfs_open_rwops_threadsafe(mpqfs_archive_t *archive,
-    const char *filename);
-
-/**
- * Create an SDL 1.2 RWops that owns an independent archive clone,
- * using a pre-resolved hash table entry index.
- *
- * This is the hash-based counterpart of mpqfs_open_rwops_threadsafe().
- *
- * @note Encrypted files are NOT supported by this function because the
- *       filename is not available for key derivation.  For Diablo 1
- *       assets (which are never encrypted) this is not a limitation.
- *
- * @param archive  Open archive handle (used to clone).
- * @param hash     Hash table entry index.
- * @return         A seekable, read-only SDL_RWops, or NULL on error.
- */
-MPQFS_API SDL_RWops *mpqfs_open_rwops_threadsafe_from_hash(
-    mpqfs_archive_t *archive, uint32_t hash);
-
-#endif /* MPQFS_USE_SDL1 */
 
 /* -----------------------------------------------------------------------
  * Archive writing (Diablo 1 save-game compatible)

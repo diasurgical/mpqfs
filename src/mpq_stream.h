@@ -1,5 +1,5 @@
 /*
- * mpqfs — minimal MPQ v1 reader with SDL integration
+ * mpqfs — minimal MPQ v1 reader/writer
  * SPDX-License-Identifier: MIT
  *
  * Internal header: per-file stream state for sector-based reads.

@@ -1,5 +1,5 @@
 /*
- * mpqfs — Minimal MPQ v1 archive reader with SDL integration
+ * mpqfs — Minimal MPQ v1 archive reader/writer
  * SPDX-License-Identifier: MIT
  *
  * Internal header: platform portability shims.

@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.14)
 
 project(mpqfs
     VERSION 0.1.0
-    DESCRIPTION "Minimal MPQ v1 archive reader with SDL integration"
+    DESCRIPTION "Minimal MPQ v1 archive reader/writer"
     LANGUAGES C
 )
 
@@ -10,7 +10,6 @@ project(mpqfs
 # By default we compile as C99 for maximum portability (PS2 ee-gcc, DJGPP, etc.)
 option(MPQFS_BUILD_TESTS    "Build test executables"                         ON)
 option(MPQFS_BUILD_SHARED   "Build as a shared library instead of static"    OFF)
-option(MPQFS_SDL_VERSION    "SDL version to build against (1, 2, 3, or AUTO)" "AUTO")
 
 # --- C standard ---
 # C99 is the baseline — it works on every toolchain DevilutionX targets,
@@ -18,60 +17,6 @@ option(MPQFS_SDL_VERSION    "SDL version to build against (1, 2, 3, or AUTO)" "A
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
-
-# --- SDL detection ---
-#
-# When embedded via add_subdirectory / FetchContent the parent project may
-# have already created SDL targets without using find_package (e.g. by
-# building SDL from source).  We check for existing targets first so that
-# find_package is only called when necessary.
-
-if(MPQFS_SDL_VERSION STREQUAL "AUTO")
-    if(TARGET SDL3::SDL3)
-        set(_MPQFS_SDL_VER 3)
-        message(STATUS "mpqfs: Found SDL3 (target)")
-    elseif(TARGET SDL2::SDL2 OR TARGET SDL2::SDL2-static)
-        set(_MPQFS_SDL_VER 2)
-        message(STATUS "mpqfs: Found SDL2 (target)")
-    else()
-        find_package(SDL3 QUIET)
-        if(SDL3_FOUND)
-            set(_MPQFS_SDL_VER 3)
-            message(STATUS "mpqfs: Found SDL3")
-        else()
-            find_package(SDL2 QUIET)
-            if(SDL2_FOUND)
-                set(_MPQFS_SDL_VER 2)
-                message(STATUS "mpqfs: Found SDL2")
-            else()
-                find_package(SDL QUIET)
-                if(SDL_FOUND)
-                    set(_MPQFS_SDL_VER 1)
-                    message(STATUS "mpqfs: Found SDL 1.2")
-                else()
-                    set(_MPQFS_SDL_VER 0)
-                    message(STATUS "mpqfs: No SDL found, building without SDL integration")
-                endif()
-            endif()
-        endif()
-    endif()
-elseif(MPQFS_SDL_VERSION STREQUAL "3")
-    if(NOT TARGET SDL3::SDL3)
-        find_package(SDL3 REQUIRED)
-    endif()
-    set(_MPQFS_SDL_VER 3)
-elseif(MPQFS_SDL_VERSION STREQUAL "2")
-    if(NOT TARGET SDL2::SDL2 AND NOT TARGET SDL2::SDL2-static)
-        find_package(SDL2 REQUIRED)
-    endif()
-    set(_MPQFS_SDL_VER 2)
-elseif(MPQFS_SDL_VERSION STREQUAL "1")
-    find_package(SDL REQUIRED)
-    set(_MPQFS_SDL_VER 1)
-else()
-    set(_MPQFS_SDL_VER 0)
-    message(STATUS "mpqfs: SDL integration disabled")
-endif()
 
 # --- zlib and bzip2 (optional, for MPQ_FILE_COMPRESS sector decompression) ---
 #
@@ -108,10 +53,6 @@ set(MPQFS_SOURCES
     src/mpq_writer.c
 )
 
-if(_MPQFS_SDL_VER GREATER 0)
-    list(APPEND MPQFS_SOURCES src/mpq_sdl.c)
-endif()
-
 if(MPQFS_BUILD_SHARED)
     add_library(mpqfs SHARED ${MPQFS_SOURCES})
     target_compile_definitions(mpqfs
@@ -132,9 +73,6 @@ target_include_directories(mpqfs
         ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-# SDL version define (used internally by mpq_sdl.c)
-target_compile_definitions(mpqfs PRIVATE MPQFS_SDL_VERSION=${_MPQFS_SDL_VER})
-
 # zlib and bzip2 linkage (when enabled)
 # When mpqfs is built as a static library (the default), consumers need
 # the transitive dependency to resolve symbols at link time.
@@ -153,23 +91,6 @@ if(MPQFS_USE_BZIP2)
     else()
         target_link_libraries(mpqfs PUBLIC BZip2::BZip2)
     endif()
-endif()
-
-# SDL linkage
-if(_MPQFS_SDL_VER EQUAL 3)
-    target_link_libraries(mpqfs PUBLIC SDL3::SDL3)
-    target_compile_definitions(mpqfs PUBLIC MPQFS_USE_SDL3=1)
-elseif(_MPQFS_SDL_VER EQUAL 2)
-    if(TARGET SDL2::SDL2)
-        target_link_libraries(mpqfs PUBLIC SDL2::SDL2)
-    elseif(TARGET SDL2::SDL2-static)
-        target_link_libraries(mpqfs PUBLIC SDL2::SDL2-static)
-    endif()
-    target_compile_definitions(mpqfs PUBLIC MPQFS_USE_SDL2=1)
-elseif(_MPQFS_SDL_VER EQUAL 1)
-    target_include_directories(mpqfs PUBLIC ${SDL_INCLUDE_DIR})
-    target_link_libraries(mpqfs PUBLIC ${SDL_LIBRARY})
-    target_compile_definitions(mpqfs PUBLIC MPQFS_USE_SDL1=1)
 endif()
 
 # --- Compiler warnings (platform-aware) ---
@@ -211,7 +132,7 @@ endif()
 #
 # Install rules are only useful when mpqfs is the top-level project.
 # When embedded via add_subdirectory / FetchContent, the install export
-# would fail if mpqfs's private dependencies (zlib, bzip2, SDL) are
+# would fail if mpqfs's private dependencies (zlib, bzip2) are
 # also built from source and not part of any export set.
 
 if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)

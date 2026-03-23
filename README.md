@@ -1,8 +1,8 @@
 # mpqfs
 
-A minimal, MIT-licensed C99 library for reading and writing MPQ v1 archives (as used by Diablo 1), with native SDL 1.2 / SDL 2 / SDL 3 integration.
+A minimal, MIT-licensed C99 library for reading and writing MPQ v1 archives (as used by Diablo 1).
 
-**mpqfs** provides a clean streaming interface to files inside MPQ archives, designed to slot directly into game engines via `SDL_RWops` (SDL 1.2 & 2) or `SDL_IOStream` (SDL 3). It also supports creating MPQ archives in the basic style used by Diablo 1 for its save-game files.
+**mpqfs** provides a clean streaming interface to files inside MPQ archives, designed to slot directly into game engines. It also supports creating MPQ archives in the basic style used by Diablo 1 for its save-game files.
 
 ## Features
 
@@ -10,10 +10,9 @@ A minimal, MIT-licensed C99 library for reading and writing MPQ v1 archives (as 
 - **PKWARE DCL** (implode) decompression — the compression scheme used by Diablo 1
 - **PKWARE DCL** (implode) compression — sector-based, for save-game writing
 - **MPQ v1 writing** — create archives compatible with DevilutionX's save-game format
-- **SDL 1.2 / SDL 2 / SDL 3** adapter: expose archived files as seekable streams
 - **Zero-copy sector-based streaming** (files are not fully decompressed up front)
 - **Written in C99**, compiles cleanly as **C++11 through C++20**
-- **No external dependencies** beyond the C standard library (and optionally SDL)
+- **No external dependencies** beyond the C standard library
 - **MIT licensed** — suitable for embedding in any engine
 
 ## Platform support
@@ -47,7 +46,7 @@ mpqfs is designed for extreme portability. It has been written to compile and ru
 mpqfs uses CMake (>= 3.14):
 
 ```sh
-cmake -S . -B build -DMPQFS_SDL_VERSION=AUTO
+cmake -S . -B build
 cmake --build build
 ```
 
@@ -55,11 +54,8 @@ cmake --build build
 
 | Option              | Default | Description                                        |
 |---------------------|---------|----------------------------------------------------|
-| `MPQFS_SDL_VERSION` | `AUTO`  | SDL major version to target (`1`, `2`, `3`, `AUTO`, or `0` to disable) |
 | `MPQFS_BUILD_TESTS` | `ON`    | Build the test executable                          |
 | `MPQFS_BUILD_SHARED`| `OFF`   | Build as shared library instead of static          |
-
-When `MPQFS_SDL_VERSION` is `AUTO`, CMake probes for SDL3, then SDL2, then SDL 1.2. If none is found, the library builds without SDL integration (the core read API still works).
 
 ### Using mpqfs in your CMake project
 
@@ -102,11 +98,7 @@ target_link_libraries(devilutionx PRIVATE mpqfs::mpqfs)
 // Open DIABDAT.MPQ
 mpqfs_archive_t *archive = mpqfs_open("DIABDAT.MPQ");
 
-// Get an SDL_RWops (SDL2) or SDL_IOStream (SDL3) for streaming
-SDL_RWops *rw = mpqfs_open_rwops(archive, "music\\dtowne.wav");
-Mix_Music *mus = Mix_LoadMUS_RW(rw, 1);
-
-// Or read a whole file into memory
+// Read a whole file into memory
 size_t size = 0;
 void *data = mpqfs_read_file(archive, "ui_art\\title.pcx", &size);
 // ... use data ...
@@ -152,16 +144,8 @@ if (data) {
     free(data);
 }
 
-/* Or get an SDL stream for incremental / streaming reads */
-SDL_RWops *rw = mpqfs_open_rwops(archive, "music\\dtowne.wav");
-if (rw) {
-    Mix_Music *mus = Mix_LoadMUS_RW(rw, 1); /* SDL_mixer takes ownership */
-}
-
 mpqfs_close(archive);
 ```
-
-For SDL 3, use `mpqfs_open_io()` which returns an `SDL_IOStream *` instead.
 
 ### Writing an archive (Diablo 1 save-game format)
 
@@ -281,19 +265,6 @@ Both the block table and hash table have `hash_table_size` entries.
 Unused block table entries are zeroed. This layout is compatible with
 DevilutionX's save-game format, where block and hash tables are placed
 immediately after the header, before file data.
-
-### SDL streaming
-
-```c
-/* SDL 1.2 & SDL 2 — returns a seekable, read-only SDL_RWops. */
-SDL_RWops *mpqfs_open_rwops(mpqfs_archive_t *archive, const char *filename);
-
-/* SDL 3 — returns a seekable, read-only SDL_IOStream. */
-SDL_IOStream *mpqfs_open_io(mpqfs_archive_t *archive, const char *filename);
-```
-
-All SDL streams are self-contained: closing the stream frees its internal
-resources but does **not** close the parent archive.
 
 ### Error handling
 

@@ -1,5 +1,5 @@
 /*
- * mpqfs — minimal MPQ v1 reader/writer with SDL integration
+ * mpqfs — minimal MPQ v1 reader/writer
  * SPDX-License-Identifier: MIT
  *
  * MPQ cryptographic primitives: encryption table, string hashing,
