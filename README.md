@@ -2,44 +2,19 @@
 
 A minimal, MIT-licensed C99 library for reading and writing MPQ v1 archives (as used by Diablo 1).
 
-**mpqfs** provides a clean streaming interface to files inside MPQ archives, designed to slot directly into game engines. It also supports creating MPQ archives in the basic style used by Diablo 1 for its save-game files.
+**mpqfs** provides a clean streaming interface to files inside MPQ archives, designed to slot directly into game engines. It also supports creating MPQ archives in the style used by Diablo 1 for its save-game files.
 
 ## Features
 
 - **MPQ v1 format** support (Diablo 1 `DIABDAT.MPQ`)
-- **PKWARE DCL** (implode) decompression — the compression scheme used by Diablo 1
-- **PKWARE DCL** (implode) compression — sector-based, for save-game writing
-- **MPQ v1 writing** — create archives compatible with DevilutionX's save-game format
+- **PKWARE DCL** (implode) decompression and compression — the scheme used by Diablo 1
+- **zlib and bzip2** decompression — for MPQ archives that use multi-method compression (e.g. Warcraft III), optionally compiled in
+- **MPQ v1 writing** — create archives compatible with Diablo 1's save-game format
 - **Zero-copy sector-based streaming** (files are not fully decompressed up front)
+- **Archive cloning** for thread-safe concurrent reads
+- **Carry-forward** — copy files between archives without recompression
 - **Written in C99**, compiles cleanly as **C++11 through C++20**
-- **No external dependencies** beyond the C standard library
 - **MIT licensed** — suitable for embedding in any engine
-
-## Platform support
-
-mpqfs is designed for extreme portability. It has been written to compile and run correctly on:
-
-| Platform        | Toolchain          | Notes                                      |
-|-----------------|--------------------|--------------------------------------------|
-| Linux           | GCC / Clang        | Primary development platform               |
-| Windows         | MSVC / MinGW       | Full support including `_fdopen`            |
-| macOS / iOS     | Apple Clang        |                                             |
-| Android         | NDK (Clang)        |                                             |
-| DOS             | DJGPP (GCC)        | No threads — TLS degrades to static        |
-| PS2             | ee-gcc             | No threads, no POSIX fd — use `mpqfs_open` or `mpqfs_open_fp` |
-| 3DS / Vita      | devkitARM / vitasdk| No POSIX fd                                |
-| Nintendo Switch | devkitA64          | No POSIX fd                                |
-| Emscripten      | emcc               |                                             |
-
-### Portability details
-
-- **C99 baseline** — no C11 or C++ features are required to compile the library.
-- **C++ safe** — all headers use `extern "C"` guards. The entire library compiles as C++20 with zero warnings under `-Wall -Wextra -Wpedantic`.
-- **Endian safe** — all on-disk data is parsed via byte-level reads. Big-endian platforms are detected at compile time with byte-swap helpers ready.
-- **No TLS requirement** — `thread_local` / `_Thread_local` / `__thread` is used when available but degrades to a plain `static` on single-threaded platforms.
-- **No POSIX requirement** — `mpqfs_open(path)` uses only `fopen`/`fread`/`fseek`. The `mpqfs_open_fd()` variant is conditionally compiled only on platforms that provide `fdopen()`. A fully portable `mpqfs_open_fp(FILE*)` is always available.
-- **Struct packing** — on-disk struct layouts are verified with compile-time size assertions. Both `#pragma pack` (MSVC) and `__attribute__((packed))` (GCC/Clang) are used.
-- **Alignment safe** — no unaligned memory access. Multi-byte values are read byte-by-byte from raw buffers.
 
 ## Building
 
@@ -52,17 +27,34 @@ cmake --build build
 
 ### CMake options
 
-| Option              | Default | Description                                        |
-|---------------------|---------|----------------------------------------------------|
-| `MPQFS_BUILD_TESTS` | `ON`    | Build the test executable                          |
-| `MPQFS_BUILD_SHARED`| `OFF`   | Build as shared library instead of static          |
+| Option               | Default | Description                                              |
+|----------------------|---------|----------------------------------------------------------|
+| `MPQFS_BUILD_TESTS`  | `ON`   | Build the test executable                                |
+| `MPQFS_BUILD_SHARED` | `OFF`  | Build as shared library instead of static                |
+| `MPQFS_USE_ZLIB`     | `ON`   | Enable zlib decompression for `MPQ_FILE_COMPRESS` sectors  |
+| `MPQFS_USE_BZIP2`    | `ON`   | Enable bzip2 decompression for `MPQ_FILE_COMPRESS` sectors |
+
+PKWARE DCL (implode/explode) is always built in — it has no external dependencies. zlib and bzip2 are only needed for MPQ archives that use the multi-method compression flag, which is common in Warcraft III but not in Diablo 1. On platforms where these libraries are unavailable, set `MPQFS_USE_ZLIB=OFF` and/or `MPQFS_USE_BZIP2=OFF`.
 
 ### Using mpqfs in your CMake project
 
-#### As a subdirectory (recommended for game engines)
+#### As a subdirectory
 
 ```cmake
 add_subdirectory(vendor/mpqfs)
+target_link_libraries(my_game PRIVATE mpqfs::mpqfs)
+```
+
+#### Via FetchContent
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(mpqfs
+    GIT_REPOSITORY https://github.com/AJenbo/mpqfs.git
+    GIT_TAG        main
+)
+FetchContent_MakeAvailable(mpqfs)
+
 target_link_libraries(my_game PRIVATE mpqfs::mpqfs)
 ```
 
@@ -73,50 +65,6 @@ find_package(mpqfs REQUIRED)
 target_link_libraries(my_game PRIVATE mpqfs::mpqfs)
 ```
 
-## Integration with DevilutionX
-
-mpqfs is designed to integrate with [DevilutionX](https://github.com/AJenbo/devilutionX). Since DevilutionX uses CMake and C++20, integration is straightforward:
-
-1. Add mpqfs as a subdirectory or fetch it via `FetchContent`:
-
-```cmake
-include(FetchContent)
-FetchContent_Declare(mpqfs
-    GIT_REPOSITORY https://github.com/AJenbo/mpqfs.git
-    GIT_TAG        main
-)
-FetchContent_MakeAvailable(mpqfs)
-
-target_link_libraries(devilutionx PRIVATE mpqfs::mpqfs)
-```
-
-2. Use the library from C++ code — no special handling needed:
-
-```cpp
-#include <mpqfs/mpqfs.h>
-
-// Open DIABDAT.MPQ
-mpqfs_archive_t *archive = mpqfs_open("DIABDAT.MPQ");
-
-// Read a whole file into memory
-size_t size = 0;
-void *data = mpqfs_read_file(archive, "ui_art\\title.pcx", &size);
-// ... use data ...
-free(data);
-
-mpqfs_close(archive);
-```
-
-3. On platforms without POSIX file descriptors (PS2, 3DS, etc.), use the `FILE*` variant:
-
-```cpp
-FILE *fp = /* platform-specific file open */;
-mpqfs_archive_t *archive = mpqfs_open_fp(fp);
-// ... use archive ...
-mpqfs_close(archive);
-fclose(fp);  // caller retains ownership of the FILE*
-```
-
 ## Quick start
 
 ### Reading an archive
@@ -124,7 +72,6 @@ fclose(fp);  // caller retains ownership of the FILE*
 ```c
 #include <mpqfs/mpqfs.h>
 
-/* Open the archive */
 mpqfs_archive_t *archive = mpqfs_open("DIABDAT.MPQ");
 if (!archive) {
     fprintf(stderr, "failed to open archive: %s\n", mpqfs_last_error());
@@ -147,24 +94,20 @@ if (data) {
 mpqfs_close(archive);
 ```
 
-### Writing an archive (Diablo 1 save-game format)
+### Writing an archive
 
 ```c
 #include <mpqfs/mpqfs.h>
 
-/* Create a new MPQ archive */
 mpqfs_writer_t *writer = mpqfs_writer_create("save.sv", 16);
 if (!writer) {
     fprintf(stderr, "failed to create archive: %s\n", mpqfs_last_error());
     return 1;
 }
 
-/* Add files — data is copied, so buffers can be freed immediately */
 mpqfs_writer_add_file(writer, "hero", hero_data, hero_size);
 mpqfs_writer_add_file(writer, "game", game_data, game_size);
-mpqfs_writer_add_file(writer, "levels\\town.dun", dun_data, dun_size);
 
-/* Finalise — writes header, file data, and encrypted tables */
 if (!mpqfs_writer_close(writer)) {
     fprintf(stderr, "failed to write archive: %s\n", mpqfs_last_error());
     return 1;
@@ -172,167 +115,131 @@ if (!mpqfs_writer_close(writer)) {
 /* writer is freed by close — do not use it after this point */
 ```
 
-The writer produces archives that are layout-compatible with DevilutionX's
-save-game format: PKWARE DCL implode compressed files, no file-level encryption,
-with standard encrypted hash and block tables placed before file data.
+### Streaming (large files)
+
+```c
+mpqfs_stream_t *stream = mpqfs_stream_open(archive, "sfx\\misc\\fire01.wav");
+if (!stream) { /* handle error */ }
+
+uint8_t buf[4096];
+size_t n;
+while ((n = mpqfs_stream_read(stream, buf, sizeof(buf))) > 0) {
+    /* process chunk ... */
+}
+
+mpqfs_stream_close(stream);
+```
+
+## Platform support
+
+mpqfs is designed for extreme portability:
+
+| Platform        | Toolchain          | Notes                                          |
+|-----------------|--------------------|-------------------------------------------------|
+| Linux           | GCC / Clang        | Primary development platform                    |
+| Windows         | MSVC / MinGW       | Full support including `_fdopen`                |
+| macOS / iOS     | Apple Clang        |                                                 |
+| Android         | NDK (Clang)        |                                                 |
+| DOS             | DJGPP (GCC)        | No threads — TLS degrades to static             |
+| Xbox (nxdk)     | nxdk               | No POSIX fd, no zlib/bzip2 by default           |
+| Xbox UWP        | MSVC               | No POSIX fd                                     |
+| PS2             | ee-gcc             | No threads, no POSIX fd                         |
+| 3DS / Vita      | devkitARM / vitasdk| No POSIX fd                                     |
+| Nintendo Switch | devkitA64          | No POSIX fd                                     |
+| Emscripten      | emcc               |                                                 |
+
+On platforms without POSIX file descriptors, use `mpqfs_open_fp(FILE*)` or `mpqfs_open(path)` instead of `mpqfs_open_fd(int fd)`. The same applies to the writer variants.
+
+Key portability properties:
+
+- **C99 baseline** — no C11 or C++ features required.
+- **C++ safe** — `extern "C"` guards on all headers; compiles as C++20 with zero warnings under `-Wall -Wextra -Wpedantic`.
+- **Endian safe** — all on-disk data is parsed via byte-level reads.
+- **Alignment safe** — no unaligned memory access.
+- **No TLS requirement** — degrades to a plain `static` on single-threaded platforms.
 
 ## API reference
 
+The public API is defined in a single header: `<mpqfs/mpqfs.h>`. See the header for full doc-comments on every function.
+
 ### Archive lifecycle
 
-```c
-/* Open an MPQ archive from a filesystem path. Returns NULL on error. */
-mpqfs_archive_t *mpqfs_open(const char *path);
-
-/* Open from an existing FILE* (does NOT take ownership). */
-mpqfs_archive_t *mpqfs_open_fp(FILE *fp);
-
-/* Open from a file descriptor (takes ownership).
- * Only available when MPQFS_HAS_FDOPEN is 1. */
-mpqfs_archive_t *mpqfs_open_fd(int fd);
-
-/* Close the archive and free all associated resources.
- * If opened with mpqfs_open_fp(), the FILE* is NOT closed. */
-void mpqfs_close(mpqfs_archive_t *archive);
-```
+| Function | Description |
+|----------|-------------|
+| `mpqfs_open(path)` | Open from a filesystem path. |
+| `mpqfs_open_fp(fp)` | Open from a `FILE*` (caller retains ownership). |
+| `mpqfs_open_fd(fd)` | Open from a file descriptor (library takes ownership). Only on platforms with `fdopen`. |
+| `mpqfs_clone(archive)` | Create an independent clone with its own `FILE*` for thread-safe concurrent reads. |
+| `mpqfs_close(archive)` | Close and free all resources. NULL-safe. |
 
 ### File queries
 
-```c
-/* Returns true if the named file exists in the archive. */
-bool mpqfs_has_file(mpqfs_archive_t *archive, const char *filename);
+| Function | Description |
+|----------|-------------|
+| `mpqfs_has_file(archive, filename)` | Check if a file exists. |
+| `mpqfs_file_size(archive, filename)` | Get uncompressed size (0 if not found). |
+| `mpqfs_find_hash(archive, filename)` | Look up a file and return its hash table index (`UINT32_MAX` if not found). |
+| `mpqfs_has_file_hash(archive, hash)` | Check existence by hash table index. |
+| `mpqfs_file_size_from_hash(archive, hash)` | Get size by hash table index. |
 
-/* Returns the uncompressed size of a file, or 0 if not found. */
-size_t mpqfs_file_size(mpqfs_archive_t *archive, const char *filename);
-```
+### Reading files
 
-### Whole-file reads
+| Function | Description |
+|----------|-------------|
+| `mpqfs_read_file(archive, filename, &size)` | Read entire file into a `malloc`'d buffer. Caller must `free()`. |
+| `mpqfs_read_file_into(archive, filename, buf, buf_size)` | Read entire file into a caller-supplied buffer. |
 
-```c
-/* Read an entire file into a newly allocated buffer.
- * Sets *out_size to the number of bytes read.
- * Returns NULL on error. Caller must free() the result. */
-void *mpqfs_read_file(mpqfs_archive_t *archive, const char *filename,
-                      size_t *out_size);
+### Streaming
 
-/* Read an entire file into a caller-supplied buffer.
- * Returns the number of bytes written, or 0 on error. */
-size_t mpqfs_read_file_into(mpqfs_archive_t *archive, const char *filename,
-                            void *buffer, size_t buffer_size);
-```
+| Function | Description |
+|----------|-------------|
+| `mpqfs_stream_open(archive, filename)` | Open a seekable read-only stream. Only one sector is held in memory. |
+| `mpqfs_stream_open_from_hash(archive, hash)` | Open a stream by hash table index (avoids rehashing). |
+| `mpqfs_stream_read(stream, buf, count)` | Read up to `count` bytes. Returns bytes read, or `(size_t)-1` on error. |
+| `mpqfs_stream_seek(stream, offset, whence)` | Seek (`SEEK_SET` / `SEEK_CUR` / `SEEK_END`). Returns new position or -1. |
+| `mpqfs_stream_tell(stream)` | Current read position. |
+| `mpqfs_stream_size(stream)` | Total uncompressed size. |
+| `mpqfs_stream_close(stream)` | Close stream. NULL-safe. Does not close the archive. |
 
-### File streaming
+### Writing archives
 
-```c
-/* Opaque stream handle */
-typedef struct mpq_stream mpqfs_stream_t;
+| Function | Description |
+|----------|-------------|
+| `mpqfs_writer_create(path, hash_table_size)` | Create a writer targeting a filesystem path. |
+| `mpqfs_writer_create_fp(fp, hash_table_size)` | Create from a `FILE*` (caller retains ownership). |
+| `mpqfs_writer_create_fd(fd, hash_table_size)` | Create from a file descriptor. Only on platforms with `fdopen`. |
+| `mpqfs_writer_add_file(writer, filename, data, size)` | Add a file (data is copied). Compressed with PKWARE DCL implode. |
+| `mpqfs_writer_has_file(writer, filename)` | Check if a file has been added. |
+| `mpqfs_writer_rename_file(writer, old, new)` | Rename a previously added file. |
+| `mpqfs_writer_remove_file(writer, filename)` | Remove a previously added file. |
+| `mpqfs_writer_carry_forward(writer, filename, archive, block_index)` | Copy a file from an existing archive without recompression. |
+| `mpqfs_writer_carry_forward_all(writer, archive)` | Copy all files from an existing archive without recompression. |
+| `mpqfs_writer_close(writer)` | Finalise and free the writer. The handle is invalid after this call. |
+| `mpqfs_writer_discard(writer)` | Discard without writing. NULL-safe. |
 
-/* Open a seekable, read-only stream to a file inside the archive.
- * Decompresses sectors on demand — only one sector is held in memory.
- * The archive must remain open for the lifetime of the stream. */
-mpqfs_stream_t *mpqfs_stream_open(mpqfs_archive_t *archive,
-                                  const char *filename);
+`hash_table_size` is rounded up to the next power of two (minimum 4) and must be larger than the number of files to add.
 
-/* Open a stream using a pre-resolved hash table entry index.
- * Avoids redundant hashing when the caller already has the index
- * from mpqfs_find_hash().  Encrypted files are NOT supported. */
-mpqfs_stream_t *mpqfs_stream_open_from_hash(mpqfs_archive_t *archive,
-                                            uint32_t hash);
+### Crypto and compression primitives
 
-/* Close a stream and free all associated memory.
- * Does NOT close the parent archive.  NULL is safely ignored. */
-void mpqfs_stream_close(mpqfs_stream_t *stream);
+These are exposed for consumers that need low-level MPQ operations:
 
-/* Read up to count bytes into buf.  Returns bytes read, or (size_t)-1 on error. */
-size_t mpqfs_stream_read(mpqfs_stream_t *stream, void *buf, size_t count);
-
-/* Seek within the uncompressed file (SEEK_SET, SEEK_CUR, SEEK_END).
- * Returns the new absolute position, or -1 on error. */
-int64_t mpqfs_stream_seek(mpqfs_stream_t *stream, int64_t offset, int whence);
-
-/* Return the current read position. */
-int64_t mpqfs_stream_tell(mpqfs_stream_t *stream);
-
-/* Return the total uncompressed size of the streamed file. */
-size_t mpqfs_stream_size(mpqfs_stream_t *stream);
-```
-
-### Archive writing
-
-```c
-/* Create a new MPQ archive at the given path.
- * hash_table_size is rounded up to the next power of two (minimum 4).
- * Must be larger than the number of files to add. */
-mpqfs_writer_t *mpqfs_writer_create(const char *path,
-                                    uint32_t hash_table_size);
-
-/* Create from an existing FILE* (does NOT take ownership). */
-mpqfs_writer_t *mpqfs_writer_create_fp(FILE *fp,
-                                       uint32_t hash_table_size);
-
-/* Create from a file descriptor (takes ownership).
- * Only available when MPQFS_HAS_FDOPEN is 1. */
-mpqfs_writer_t *mpqfs_writer_create_fd(int fd,
-                                       uint32_t hash_table_size);
-
-/* Add a file to the archive. Makes owned copies of filename and data.
- * Files are PKWARE implode compressed without encryption (DevilutionX style). */
-bool mpqfs_writer_add_file(mpqfs_writer_t *writer, const char *filename,
-                           const void *data, size_t size);
-
-/* Finalise the archive: writes header, file data, and encrypted
- * hash/block tables. Frees the writer regardless of success/failure. */
-bool mpqfs_writer_close(mpqfs_writer_t *writer);
-
-/* Discard a writer without writing. Frees all resources. */
-void mpqfs_writer_discard(mpqfs_writer_t *writer);
-```
-
-The writer produces the following on-disk layout (matching DevilutionX):
-
-| Section     | Size                              | Notes                           |
-|-------------|-----------------------------------|---------------------------------|
-| MPQ Header  | 32 bytes                          | Signature, offsets, counts      |
-| Block table | `hash_table_size × 16` bytes      | Encrypted with standard key     |
-| Hash table  | `hash_table_size × 16` bytes      | Encrypted with standard key     |
-| File data   | Variable (compressed)             | PKWARE implode, sector offset tables |
-
-Both the block table and hash table have `hash_table_size` entries.
-Unused block table entries are zeroed. This layout is compatible with
-DevilutionX's save-game format, where block and hash tables are placed
-immediately after the header, before file data.
+| Function | Description |
+|----------|-------------|
+| `mpqfs_crypto_init()` | Initialise the encryption table. Called automatically; provided for explicit control. |
+| `mpqfs_hash_string(str, hash_type)` | Compute an MPQ hash. Types: `MPQFS_HASH_TABLE_INDEX`, `_NAME_A`, `_NAME_B`, `_FILE_KEY`. |
+| `mpqfs_hash_string_s(str, len, hash_type)` | Length-delimited variant. |
+| `mpqfs_encrypt_block(data, count, key)` | Encrypt uint32 array in-place. |
+| `mpqfs_decrypt_block(data, count, key)` | Decrypt uint32 array in-place. |
+| `mpqfs_file_hash(filename, &index, &hash_a, &hash_b)` | Compute the three MPQ hashes for a filename. |
+| `mpqfs_file_hash_s(filename, len, &index, &hash_a, &hash_b)` | Length-delimited variant. |
+| `mpqfs_pk_implode(src, src_size, dst, &dst_size, dict_bits)` | PKWARE DCL compress. |
+| `mpqfs_pk_explode(src, src_size, dst, &dst_size)` | PKWARE DCL decompress. |
 
 ### Error handling
 
-```c
-/* Returns a human-readable string describing the last error, or NULL.
- * Thread-safe on platforms with TLS; process-global on single-threaded platforms. */
-const char *mpqfs_last_error(void);
-```
-
-## MPQ format notes
-
-Diablo 1's `DIABDAT.MPQ` is an MPQ v1 (format version 0) archive. Key details:
-
-- **Header**: 32 bytes, signature `MPQ\x1a`, located on a 512-byte boundary
-- **Sector size**: `512 << sector_shift` (typically 4096 bytes)
-- **Hash table**: encrypted with the key `"(hash table)"`, used for filename lookup
-- **Block table**: encrypted with the key `"(block table)"`, describes file extents
-- **Compression**: PKWARE DCL implode (flag `0x00000100`)
-- **No encryption** on individual files in `DIABDAT.MPQ`
-- Filenames use **backslash** separators and are **case-insensitive**
-
-### Save-game format
-
-Diablo 1 and DevilutionX use MPQ v1 archives for their save-game files (`.sv` / `.hsv`). These are simpler than `DIABDAT.MPQ`:
-
-- **PKWARE DCL implode compression** — sector-based, with sector offset tables
-- **No file-level encryption** — only the hash and block tables are encrypted
-- **Small file count** — typically just a handful of files (`hero`, `game`, dungeon levels)
-- **Hash and block tables** are both `hash_table_size` entries (a power-of-two), with unused block entries zeroed
-- **Tables before data** — block table and hash table are placed immediately after the 32-byte header, before file data
-
-The `mpqfs_writer_*` API produces archives with the same on-disk layout and compression as DevilutionX (`[Header][Block table][Hash table][Compressed file data]`). Files are compressed with PKWARE DCL implode; sectors that don't benefit from compression are stored raw. These archives are readable by both the mpqfs reader and DevilutionX's reader.
+| Function | Description |
+|----------|-------------|
+| `mpqfs_last_error()` | Returns a human-readable error string, or NULL. Thread-safe on platforms with TLS. |
 
 ## Running tests
 
@@ -342,12 +249,6 @@ cmake --build build
 ./build/mpqfs_test DIABDAT.MPQ               # open a real MPQ and print info
 ./build/mpqfs_test DIABDAT.MPQ "file\\name"  # extract a file to stdout
 ```
-
-The unit tests include:
-- A synthetic MPQ round-trip: constructs a valid MPQ archive in memory (with encrypted hash/block tables), writes it to a temp file, opens it, and verifies file lookup, size queries, reads, and seeking all produce correct results.
-- Writer round-trip tests: creates archives via the `mpqfs_writer_*` API, reads them back with the reader API, and verifies all files are intact. Covers single files, multiple files, empty archives, zero-length files, FILE* variants, hash table auto-sizing, and PKWARE implode compression with both compressible and incompressible data.
-- DevilutionX save file layout validation: verifies the on-disk layout matches DevilutionX (block table at offset 0x20, both table counts equal, tables before data).
-- Real save file regression test: reads `share_0.sv` (a real DevilutionX save with PKWARE implode compressed files) and extracts all files.
 
 ## License
 
