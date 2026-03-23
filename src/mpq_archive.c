@@ -141,7 +141,7 @@ static int MpqReadHeader(FILE *fp, int64_t archiveOffset,
  * On little-endian hosts steps 2 and 4 are identity operations.
  * ----------------------------------------------------------------------- */
 
-static void MpqFixupLe32Array(const uint32_t *data, size_t count)
+static void MpqFixupLe32Array(uint32_t *data, size_t count) // NOLINT(readability-non-const-parameter)
 {
 #if MPQFS_BIG_ENDIAN
 	for (size_t i = 0; i < count; i++)
@@ -174,12 +174,12 @@ static mpq_hash_entry_t *MpqLoadHashTable(FILE *fp,
 	}
 
 	/* Byte-swap from LE on disk to native for decryption. */
-	uint32_t dwordCount = count * 4; /* 16 bytes per entry = 4 dwords */
-	MpqFixupLe32Array((uint32_t *)table, dwordCount);
+	uint32_t dwordCount = count * 4;                          /* 16 bytes per entry = 4 dwords */
+	MpqFixupLe32Array((uint32_t *)(void *)table, dwordCount); // NOLINT(bugprone-casting-through-void)
 
 	/* Decrypt in-place. */
 	uint32_t key = mpq_hash_string("(hash table)", MPQ_HASH_FILE_KEY);
-	mpq_decrypt_block((uint32_t *)table, dwordCount, key);
+	mpq_decrypt_block((uint32_t *)(void *)table, dwordCount, key); // NOLINT(bugprone-casting-through-void)
 
 	/* On BE, the decrypted values are now in native order — which is
 	 * what we want for direct struct field access.  On LE they were
@@ -210,10 +210,10 @@ static mpq_block_entry_t *MpqLoadBlockTable(FILE *fp,
 	}
 
 	uint32_t dwordCount = count * 4;
-	MpqFixupLe32Array((uint32_t *)table, dwordCount);
+	MpqFixupLe32Array((uint32_t *)(void *)table, dwordCount); // NOLINT(bugprone-casting-through-void)
 
 	uint32_t key = mpq_hash_string("(block table)", MPQ_HASH_FILE_KEY);
-	mpq_decrypt_block((uint32_t *)table, dwordCount, key);
+	mpq_decrypt_block((uint32_t *)(void *)table, dwordCount, key); // NOLINT(bugprone-casting-through-void)
 
 	return table;
 }
