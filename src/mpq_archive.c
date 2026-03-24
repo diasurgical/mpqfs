@@ -356,6 +356,15 @@ mpqfs_archive_t *mpqfs_open(const char *path)
 		return NULL;
 	}
 
+#ifdef MPQFS_FILE_BUFFER_SIZE
+	if (setvbuf(fp, NULL, _IOFBF, MPQFS_FILE_BUFFER_SIZE) != 0) {
+		mpq_set_error(NULL, "mpqfs_open: cannot set buffer size: %s",
+		    strerror(errno));
+		fclose(fp);
+		return NULL;
+	}
+#endif
+
 	mpqfs_archive_t *archive = MpqInitArchive(fp, 1, "mpqfs_open");
 	if (archive) {
 		archive->path = MpqfsStrdup(path);
