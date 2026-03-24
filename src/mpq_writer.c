@@ -208,6 +208,15 @@ mpqfs_writer_t *mpqfs_writer_create(const char *path,
 		return NULL;
 	}
 
+#ifdef MPQFS_FILE_BUFFER_SIZE
+	if (setvbuf(fp, NULL, _IOFBF, MPQFS_FILE_BUFFER_SIZE) != 0) {
+		mpq_set_error(NULL, "mpqfs_writer_create: cannot set buffer size: %s",
+		    strerror(errno));
+		fclose(fp);
+		return NULL;
+	}
+#endif
+
 	return MpqWriterInit(fp, 1, hashTableSize, "mpqfs_writer_create");
 }
 
