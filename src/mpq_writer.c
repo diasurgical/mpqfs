@@ -172,9 +172,12 @@ static mpqfs_writer_t *MpqWriterInit(FILE *fp, int ownsFd,
 	writer->data_start = MPQ_HEADER_SIZE_V1 + tableEntryBytes + tableEntryBytes;
 	writer->data_cursor = writer->data_start;
 
-	/* Seek the file handle to data_start so that the first
-	 * mpqfs_writer_add_file() call writes at the right position. */
-	if (fseek(fp, (long)writer->data_start, SEEK_SET) != 0) {
+	/* Write placeholder zeroes for the header + tables region so that
+	 * the file position naturally lands at data_start.  This avoids
+	 * seeking beyond EOF, which fails on some platforms (e.g. Amiga).
+	 * The header and tables will be overwritten with real data during
+	 * mpqfs_writer_close(). */
+	if (fseek(fp, 0, SEEK_SET) != 0) {
 		mpq_writer_set_error(writer, "%s: initial seek failed: %s",
 		    sourceName, strerror(errno));
 		if (ownsFd && fp)
@@ -182,6 +185,27 @@ static mpqfs_writer_t *MpqWriterInit(FILE *fp, int ownsFd,
 		free(writer->files);
 		free(writer);
 		return NULL;
+	}
+	{
+		uint8_t zeroes[512];
+		memset(zeroes, 0, sizeof(zeroes));
+		uint32_t remaining = writer->data_start;
+		while (remaining > 0) {
+			uint32_t chunk = remaining < sizeof(zeroes)
+			    ? remaining
+			    : (uint32_t)sizeof(zeroes);
+			if (fwrite(zeroes, 1, chunk, fp) != chunk) {
+				mpq_writer_set_error(writer,
+				    "%s: failed to write placeholder: %s",
+				    sourceName, strerror(errno));
+				if (ownsFd && fp)
+					fclose(fp);
+				free(writer->files);
+				free(writer);
+				return NULL;
+			}
+			remaining -= chunk;
+		}
 	}
 
 	return writer;
