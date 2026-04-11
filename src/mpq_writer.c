@@ -39,12 +39,6 @@
  * mpqfs_writer_close() once all metadata is known.
  */
 
-/* Feature-test macro: must appear before any system headers so that
- * fdopen() and friends are declared in strict C99 mode on POSIX hosts. */
-#if !defined(_POSIX_C_SOURCE) && !defined(_WIN32) && !defined(__DJGPP__)
-#define _POSIX_C_SOURCE 200112L
-#endif
-
 #include "mpq_explode.h"
 #include <inttypes.h>
 #include <stdint.h>

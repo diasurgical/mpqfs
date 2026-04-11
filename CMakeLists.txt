@@ -14,9 +14,13 @@ option(MPQFS_BUILD_SHARED   "Build as a shared library instead of static"    OFF
 # --- C standard ---
 # C99 is the baseline — it works on every toolchain DevilutionX targets,
 # including PS2 (ee-gcc), DJGPP (DOS), and Emscripten.
+# Extensions are ON (-std=gnu99) because strict C99 (-std=c99) defines
+# __STRICT_ANSI__ on GCC, which hides POSIX types like off_t.  zlib's
+# zconf.h defines z_off_t as off_t, so including <zlib.h> fails under
+# strict C99 on platforms such as DJGPP (DOS).
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
-set(CMAKE_C_EXTENSIONS OFF)
+set(CMAKE_C_EXTENSIONS ON)
 
 # --- zlib and bzip2 (optional, for MPQ_FILE_COMPRESS sector decompression) ---
 #

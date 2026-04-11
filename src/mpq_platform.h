@@ -91,17 +91,7 @@
 #endif
 #include <stdio.h>
 #define fdopen _fdopen
-#elif defined(__DJGPP__)
-/* DJGPP provides fdopen() in its libc, but when compiling with -std=c99
- * (CMAKE_C_EXTENSIONS OFF) GCC defines __STRICT_ANSI__ and DJGPP's
- * <stdio.h> hides fdopen() behind #ifndef __STRICT_ANSI__.  Provide a
- * forward declaration so that callers don't get "implicit declaration". */
-#define MPQFS_HAS_FDOPEN 1
-#if defined(__STRICT_ANSI__)
-#include <stdio.h>
-extern FILE *fdopen(int _fildes, const char *_type);
-#endif
-#elif defined(__unix__) || defined(__APPLE__)                                \
+#elif defined(__DJGPP__) || defined(__unix__) || defined(__APPLE__)          \
     || defined(__linux__) || defined(__ANDROID__) || defined(__EMSCRIPTEN__) \
     || defined(__CYGWIN__) || defined(__HAIKU__)
 #define MPQFS_HAS_FDOPEN 1
