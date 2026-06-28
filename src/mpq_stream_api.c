@@ -5,12 +5,12 @@
  * Public stream API wrappers.
  */
 
-#include "../include/mpqfs/mpqfs.h"
-#include "mpq_archive.h"
-#include "mpq_stream.h"
-
 #include <inttypes.h>
 #include <stdint.h>
+
+#include "mpq_archive.h"
+#include "mpq_stream.h"
+#include "mpqfs/mpqfs.h"
 
 mpqfs_stream_t *mpqfs_stream_open(mpqfs_archive_t *archive,
     const char *filename)

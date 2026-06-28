@@ -93,15 +93,9 @@ extern "C" {
  * consumed by mpqfs_writer_close() or mpqfs_writer_discard().
  * ----------------------------------------------------------------------- */
 
-#ifndef MPQFS_ARCHIVE_T_DEFINED
 typedef struct mpqfs_archive mpqfs_archive_t;
-#endif
-#ifndef MPQFS_WRITER_T_DEFINED
 typedef struct mpqfs_writer mpqfs_writer_t;
-#endif
-#ifndef MPQFS_STREAM_T_DEFINED
-typedef struct mpq_stream mpqfs_stream_t;
-#endif
+typedef struct mpqfs_stream mpqfs_stream_t;
 
 /* -----------------------------------------------------------------------
  * Archive lifecycle (reading)

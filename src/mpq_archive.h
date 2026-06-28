@@ -8,11 +8,12 @@
 #ifndef MPQFS_MPQ_ARCHIVE_H
 #define MPQFS_MPQ_ARCHIVE_H
 
-#include "mpq_platform.h"
-
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+
+#include "mpq_platform.h"
+#include "mpqfs/mpqfs.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -116,8 +117,6 @@ struct mpqfs_archive {
 
 	char error[256]; /* Last error message                 */
 };
-typedef struct mpqfs_archive mpqfs_archive_t;
-#define MPQFS_ARCHIVE_T_DEFINED
 
 /* --------------------------------------------------------------------------
  * Internal helpers (implemented in mpq_archive.c)

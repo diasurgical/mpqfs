@@ -29,12 +29,13 @@
 #ifndef MPQFS_MPQ_WRITER_H
 #define MPQFS_MPQ_WRITER_H
 
-#include "mpq_archive.h"
-#include "mpq_platform.h"
-
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+
+#include "mpq_archive.h"
+#include "mpq_platform.h"
+#include "mpqfs/mpqfs.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -82,8 +83,6 @@ struct mpqfs_writer {
 
 	char error[256]; /* Last error message                       */
 };
-typedef struct mpqfs_writer mpqfs_writer_t;
-#define MPQFS_WRITER_T_DEFINED
 
 /* -----------------------------------------------------------------------
  * Internal helpers (implemented in mpq_writer.c)
