@@ -682,7 +682,7 @@ static void TestStreamSeek(void)
 	uint32_t bi = mpq_lookup_file(archive, testFilename);
 	ASSERT_TRUE(bi != UINT32_MAX);
 
-	mpq_stream_t *stream = mpq_stream_open(archive, bi);
+	mpqfs_stream_t *stream = mpq_stream_open(archive, bi);
 	ASSERT_NOT_NULL(stream);
 
 	/* Size should be correct. */

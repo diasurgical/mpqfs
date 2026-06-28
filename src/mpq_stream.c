@@ -59,7 +59,7 @@ static int MpqRawRead(mpqfs_archive_t *archive, int64_t offset,
  * Internal: load and decompress a single sector into stream->sector_buf
  * ----------------------------------------------------------------------- */
 
-static int MpqStreamLoadSector(mpq_stream_t *stream, uint32_t sectorIdx)
+static int MpqStreamLoadSector(mpqfs_stream_t *stream, uint32_t sectorIdx)
 {
 	/* Already cached? */
 	if (stream->cached_sector == sectorIdx)
@@ -312,12 +312,12 @@ static int MpqStreamLoadSector(mpq_stream_t *stream, uint32_t sectorIdx)
  * Public API: open
  * ----------------------------------------------------------------------- */
 
-mpq_stream_t *mpq_stream_open(mpqfs_archive_t *archive, uint32_t blockIndex)
+mpqfs_stream_t *mpq_stream_open(mpqfs_archive_t *archive, uint32_t blockIndex)
 {
 	return mpq_stream_open_named(archive, blockIndex, NULL);
 }
 
-mpq_stream_t *mpq_stream_open_named(mpqfs_archive_t *archive,
+mpqfs_stream_t *mpq_stream_open_named(mpqfs_archive_t *archive,
     uint32_t blockIndex,
     const char *filename)
 {
@@ -348,7 +348,7 @@ mpq_stream_t *mpq_stream_open_named(mpqfs_archive_t *archive,
 		return NULL;
 	}
 
-	mpq_stream_t *stream = (mpq_stream_t *)calloc(1, sizeof(*stream));
+	mpqfs_stream_t *stream = (mpqfs_stream_t *)calloc(1, sizeof(*stream));
 	if (!stream) {
 		mpq_set_error(archive, "mpq_stream_open: out of memory");
 		return NULL;
@@ -499,7 +499,7 @@ mpq_stream_t *mpq_stream_open_named(mpqfs_archive_t *archive,
  * Public API: close
  * ----------------------------------------------------------------------- */
 
-void mpq_stream_close(mpq_stream_t *stream)
+void mpq_stream_close(mpqfs_stream_t *stream)
 {
 	if (!stream)
 		return;
@@ -514,7 +514,7 @@ void mpq_stream_close(mpq_stream_t *stream)
  * Public API: read
  * ----------------------------------------------------------------------- */
 
-size_t mpq_stream_read(mpq_stream_t *stream, void *buf, size_t count)
+size_t mpq_stream_read(mpqfs_stream_t *stream, void *buf, size_t count)
 {
 	if (!stream || !buf)
 		return (size_t)-1;
@@ -560,7 +560,7 @@ size_t mpq_stream_read(mpq_stream_t *stream, void *buf, size_t count)
  * Public API: seek
  * ----------------------------------------------------------------------- */
 
-int64_t mpq_stream_seek(mpq_stream_t *stream, int64_t offset, int whence)
+int64_t mpq_stream_seek(mpqfs_stream_t *stream, int64_t offset, int whence)
 {
 	if (!stream)
 		return -1;
@@ -597,14 +597,14 @@ int64_t mpq_stream_seek(mpq_stream_t *stream, int64_t offset, int whence)
  * Public API: tell / size
  * ----------------------------------------------------------------------- */
 
-int64_t mpq_stream_tell(mpq_stream_t *stream)
+int64_t mpq_stream_tell(mpqfs_stream_t *stream)
 {
 	if (!stream)
 		return -1;
 	return (int64_t)stream->position;
 }
 
-size_t mpq_stream_size(mpq_stream_t *stream)
+size_t mpq_stream_size(mpqfs_stream_t *stream)
 {
 	if (!stream)
 		return 0;

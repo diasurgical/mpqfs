@@ -8,16 +8,18 @@
 #ifndef MPQFS_MPQ_STREAM_H
 #define MPQFS_MPQ_STREAM_H
 
-#include "mpq_archive.h"
 #include <stddef.h>
 #include <stdint.h>
+
+#include "mpq_archive.h"
+#include "mpqfs/mpqfs.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /*
- * An mpq_stream_t represents an open handle to a single file within an MPQ
+ * An mpqfs_stream_t represents an open handle to a single file within an MPQ
  * archive.  It manages:
  *   - the current read position (logical offset within the uncompressed file)
  *   - a cached decompressed sector so that sequential reads don't decompress
@@ -28,7 +30,7 @@ extern "C" {
  * The stream does NOT own the archive — the caller must keep the archive alive
  * for the lifetime of any stream created from it.
  */
-typedef struct mpq_stream {
+struct mpqfs_stream {
 	/* Back-pointer to the parent archive (not owned). */
 	mpqfs_archive_t *archive;
 
@@ -82,7 +84,7 @@ typedef struct mpq_stream {
 
 	/* Current logical read position within the uncompressed file. */
 	uint64_t position;
-} mpq_stream_t;
+};
 
 /*
  * Open a stream to the file identified by `block_index` inside `archive`.
@@ -91,7 +93,7 @@ typedef struct mpq_stream {
  * This variant does NOT support encrypted files — use mpq_stream_open_named()
  * instead when the file may be encrypted.
  */
-mpq_stream_t *mpq_stream_open(mpqfs_archive_t *archive, uint32_t blockIndex);
+mpqfs_stream_t *mpq_stream_open(mpqfs_archive_t *archive, uint32_t blockIndex);
 
 /*
  * Open a stream to the file identified by `block_index`, using `filename`
@@ -103,7 +105,7 @@ mpq_stream_t *mpq_stream_open(mpqfs_archive_t *archive, uint32_t blockIndex);
  *
  * Returns NULL on error (sets mpqfs_last_error).
  */
-mpq_stream_t *mpq_stream_open_named(mpqfs_archive_t *archive,
+mpqfs_stream_t *mpq_stream_open_named(mpqfs_archive_t *archive,
     uint32_t blockIndex,
     const char *filename);
 
@@ -111,37 +113,34 @@ mpq_stream_t *mpq_stream_open_named(mpqfs_archive_t *archive,
  * Close a stream and free all associated memory.
  * Does NOT close the parent archive.
  */
-void mpq_stream_close(mpq_stream_t *stream);
+void mpq_stream_close(mpqfs_stream_t *stream);
 
 /*
  * Read up to `count` bytes from the stream at its current position into `buf`.
  * Advances the position by the number of bytes actually read.
  * Returns the number of bytes read, or (size_t)-1 on error.
  */
-size_t mpq_stream_read(mpq_stream_t *stream, void *buf, size_t count);
+size_t mpq_stream_read(mpqfs_stream_t *stream, void *buf, size_t count);
 
 /*
  * Seek to an absolute position within the uncompressed file.
  * Supports SEEK_SET, SEEK_CUR, SEEK_END (same semantics as fseek/lseek).
  * Returns the new absolute position, or -1 on error.
  */
-int64_t mpq_stream_seek(mpq_stream_t *stream, int64_t offset, int whence);
+int64_t mpq_stream_seek(mpqfs_stream_t *stream, int64_t offset, int whence);
 
 /*
  * Return the current read position.
  */
-int64_t mpq_stream_tell(mpq_stream_t *stream);
+int64_t mpq_stream_tell(mpqfs_stream_t *stream);
 
 /*
  * Return the total uncompressed size of the file.
  */
-size_t mpq_stream_size(mpq_stream_t *stream);
+size_t mpq_stream_size(mpqfs_stream_t *stream);
 
 #ifdef __cplusplus
 }
 #endif
-
-typedef mpq_stream_t mpqfs_stream_t;
-#define MPQFS_STREAM_T_DEFINED
 
 #endif /* MPQFS_MPQ_STREAM_H */
