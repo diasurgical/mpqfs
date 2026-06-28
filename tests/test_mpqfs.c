@@ -2413,7 +2413,12 @@ static int InteractiveMode(const char *mpqPath, const char *filename)
 		}
 
 		size_t fsize = 0;
-		mpqfs_file_size(archive, filename, &fsize);
+		const mpqfs_error_code fileSizeRc = mpqfs_file_size(archive, filename, &fsize);
+		if (fileSizeRc != MPQFS_OK) {
+			fprintf(stderr, "Error getting file size: %s\n", mpqfs_error_message(fileSizeRc));
+			mpqfs_close(archive);
+			return 1;
+		}
 		fprintf(stderr, "File size: %zu bytes\n", fsize);
 
 		/* Also show the block entry details for this file. */

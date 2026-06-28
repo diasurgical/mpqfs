@@ -465,7 +465,11 @@ mpqfs_error_code mpqfs_read_file(mpqfs_archive_t *archive, const char *filename,
 	MPQFS_RET_CHECK(rc == MPQFS_OK, rc);
 
 	size_t total;
-	mpq_stream_size(stream, &total);
+	rc = mpq_stream_size(stream, &total);
+	if (rc != MPQFS_OK) {
+		mpq_stream_close(stream);
+		return rc;
+	}
 
 	uint8_t *buf = (uint8_t *)malloc(total);
 	if (MPQFS_UNLIKELY(!buf)) {
