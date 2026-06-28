@@ -48,7 +48,7 @@ endif()
 
 # --- Library target ---
 
-add_library(mpqfs
+add_library(mpqfs_obj OBJECT
     src/mpq_archive.c
     src/mpq_crypto.c
     src/mpq_error.c
@@ -58,15 +58,13 @@ add_library(mpqfs
     src/mpq_writer.c
 )
 if(BUILD_SHARED_LIBS)
-    target_compile_definitions(mpqfs
+    target_compile_definitions(mpqfs_obj
         PRIVATE MPQFS_BUILDING=1
         PUBLIC  MPQFS_SHARED=1
     )
 endif()
 
-add_library(mpqfs::mpqfs ALIAS mpqfs)
-
-target_include_directories(mpqfs
+target_include_directories(mpqfs_obj
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
@@ -74,19 +72,29 @@ target_include_directories(mpqfs
         ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
+add_library(mpqfs)
+target_link_libraries(mpqfs PUBLIC mpqfs_obj)
+set_target_properties(mpqfs PROPERTIES
+  VERSION ${PROJECT_VERSION}
+  SOVERSION ${PROJECT_VERSION_MAJOR}
+  C_VISIBILITY_PRESET "hidden"
+)
+
+add_library(mpqfs::mpqfs ALIAS mpqfs)
+
 if(MPQFS_USE_ZLIB)
-    target_compile_definitions(mpqfs PUBLIC MPQFS_HAS_ZLIB=1)
-    target_link_libraries(mpqfs PRIVATE ZLIB::ZLIB)
+    target_compile_definitions(mpqfs_obj PUBLIC MPQFS_HAS_ZLIB=1)
+    target_link_libraries(mpqfs_obj PRIVATE ZLIB::ZLIB)
 endif()
 if(MPQFS_USE_BZIP2)
-    target_compile_definitions(mpqfs PUBLIC MPQFS_HAS_BZIP2=1)
-    target_link_libraries(mpqfs PRIVATE BZip2::BZip2)
+    target_compile_definitions(mpqfs_obj PUBLIC MPQFS_HAS_BZIP2=1)
+    target_link_libraries(mpqfs_obj PRIVATE BZip2::BZip2)
 endif()
 
 # --- Compiler warnings (platform-aware) ---
 
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(mpqfs PRIVATE
+    target_compile_options(mpqfs_obj PRIVATE
         -Wall -Wextra -Wpedantic
         -Wconversion -Wsign-conversion
         -Wno-unused-function        # static inline helpers in headers
@@ -94,7 +102,7 @@ if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     # Ensure the library compiles cleanly as C++ when included by a C++ TU.
     # This doesn't change the library's own language, just validates compat.
 elseif(MSVC)
-    target_compile_options(mpqfs PRIVATE
+    target_compile_options(mpqfs_obj PRIVATE
         /W4
         /wd4100   # unreferenced formal parameter (same as -Wno-unused-parameter)
         /wd4244   # possible loss of data (narrowing)
@@ -105,7 +113,7 @@ endif()
 
 if(BUILD_TESTING)
     add_executable(mpqfs_test tests/test_mpqfs.c)
-    target_link_libraries(mpqfs_test PRIVATE mpqfs::mpqfs)
+    target_link_libraries(mpqfs_test PRIVATE mpqfs_obj)
     target_include_directories(mpqfs_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
     # Suppress warnings in test code that are intentional (e.g. sign conversion
@@ -130,7 +138,9 @@ if(CMAKE_CURRENT_SOURCE_DIR STREQUAL CMAKE_SOURCE_DIR)
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
-install(TARGETS mpqfs
+# `mpqfs_obj` OBJECT target is automatically turned into an INTERFACE target
+# on installation.
+install(TARGETS mpqfs mpqfs_obj
     EXPORT mpqfsTargets
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
