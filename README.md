@@ -27,12 +27,12 @@ cmake --build build
 
 ### CMake options
 
-| Option               | Default | Description                                              |
-|----------------------|---------|----------------------------------------------------------|
-| `MPQFS_BUILD_TESTS`  | `ON`   | Build the test executable                                |
-| `MPQFS_BUILD_SHARED` | `OFF`  | Build as shared library instead of static                |
-| `MPQFS_USE_ZLIB`     | `ON`   | Enable zlib decompression for `MPQ_FILE_COMPRESS` sectors  |
-| `MPQFS_USE_BZIP2`    | `ON`   | Enable bzip2 decompression for `MPQ_FILE_COMPRESS` sectors |
+| Option               | Default | Description                                                |
+|----------------------|---------|------------------------------------------------------------|
+| `BUILD_TESTING`      | `ON`    | Build the test executable                                  |
+| `BUILD_SHARED_LIBS`  | `OFF`   | Build as shared library instead of static                  |
+| `MPQFS_USE_ZLIB`     | `ON`    | Enable zlib decompression for `MPQ_FILE_COMPRESS` sectors  |
+| `MPQFS_USE_BZIP2`    | `ON`    | Enable bzip2 decompression for `MPQ_FILE_COMPRESS` sectors |
 
 PKWARE DCL (implode/explode) is always built in — it has no external dependencies. zlib and bzip2 are only needed for MPQ archives that use the multi-method compression flag, which is common in Warcraft III but not in Diablo 1. On platforms where these libraries are unavailable, set `MPQFS_USE_ZLIB=OFF` and/or `MPQFS_USE_BZIP2=OFF`.
 
@@ -61,7 +61,7 @@ target_link_libraries(my_game PRIVATE mpqfs::mpqfs)
 #### Via find_package (after install)
 
 ```cmake
-find_package(mpqfs REQUIRED)
+find_package(mpqfs REQUIRED CONFIG)
 target_link_libraries(my_game PRIVATE mpqfs::mpqfs)
 ```
 

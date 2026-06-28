@@ -8,8 +8,7 @@ project(mpqfs
 
 # Allow consumers to enable C++ compilation if they prefer.
 # By default we compile as C99 for maximum portability (PS2 ee-gcc, DJGPP, etc.)
-option(MPQFS_BUILD_TESTS    "Build test executables"                         ON)
-option(MPQFS_BUILD_SHARED   "Build as a shared library instead of static"    OFF)
+option(BUILD_TESTING "Build test executables" ON)
 
 # --- C standard ---
 # C99 is the baseline — it works on every toolchain DevilutionX targets,
@@ -49,7 +48,7 @@ endif()
 
 # --- Library target ---
 
-set(MPQFS_SOURCES
+add_library(mpqfs
     src/mpq_archive.c
     src/mpq_crypto.c
     src/mpq_pkware.c
@@ -57,15 +56,11 @@ set(MPQFS_SOURCES
     src/mpq_stream_api.c
     src/mpq_writer.c
 )
-
-if(MPQFS_BUILD_SHARED)
-    add_library(mpqfs SHARED ${MPQFS_SOURCES})
+if(BUILD_SHARED_LIBS)
     target_compile_definitions(mpqfs
         PRIVATE MPQFS_BUILDING=1
         PUBLIC  MPQFS_SHARED=1
     )
-else()
-    add_library(mpqfs STATIC ${MPQFS_SOURCES})
 endif()
 
 add_library(mpqfs::mpqfs ALIAS mpqfs)
@@ -78,24 +73,13 @@ target_include_directories(mpqfs
         ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-# zlib and bzip2 linkage (when enabled)
-# When mpqfs is built as a static library (the default), consumers need
-# the transitive dependency to resolve symbols at link time.
 if(MPQFS_USE_ZLIB)
     target_compile_definitions(mpqfs PUBLIC MPQFS_HAS_ZLIB=1)
-    if(MPQFS_BUILD_SHARED)
-        target_link_libraries(mpqfs PRIVATE ZLIB::ZLIB)
-    else()
-        target_link_libraries(mpqfs PUBLIC ZLIB::ZLIB)
-    endif()
+    target_link_libraries(mpqfs PRIVATE ZLIB::ZLIB)
 endif()
 if(MPQFS_USE_BZIP2)
     target_compile_definitions(mpqfs PUBLIC MPQFS_HAS_BZIP2=1)
-    if(MPQFS_BUILD_SHARED)
-        target_link_libraries(mpqfs PRIVATE BZip2::BZip2)
-    else()
-        target_link_libraries(mpqfs PUBLIC BZip2::BZip2)
-    endif()
+    target_link_libraries(mpqfs PRIVATE BZip2::BZip2)
 endif()
 
 # --- Compiler warnings (platform-aware) ---
@@ -118,7 +102,7 @@ endif()
 
 # --- Tests ---
 
-if(MPQFS_BUILD_TESTS)
+if(BUILD_TESTING)
     add_executable(mpqfs_test tests/test_mpqfs.c)
     target_link_libraries(mpqfs_test PRIVATE mpqfs::mpqfs)
     target_include_directories(mpqfs_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
