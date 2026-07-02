@@ -35,42 +35,7 @@
 #include <stdint.h>
 
 /* -----------------------------------------------------------------------
- * 3.  MPQFS_THREAD_LOCAL
- *
- *     Expands to the appropriate thread-local storage qualifier when the
- *     toolchain supports it, or to nothing on single-threaded platforms
- *     (DOS / PS2 / bare-metal) where a plain static is fine.
- * ----------------------------------------------------------------------- */
-
-#if defined(__cplusplus)
-/* C++11 and later have thread_local as a keyword. */
-#if __cplusplus >= 201103L && !defined(__PS2__) && !defined(__DJGPP__) \
-    && !defined(_3DS) && !defined(__vita__) && !defined(__EMSCRIPTEN__)
-#define MPQFS_THREAD_LOCAL thread_local
-#else
-#define MPQFS_THREAD_LOCAL /* unavailable — degrade to plain static */
-#endif
-#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L \
-    && !defined(__STDC_NO_THREADS__)                           \
-    && !defined(__PS2__) && !defined(__DJGPP__)                \
-    && !defined(_3DS) && !defined(__vita__) && !defined(__EMSCRIPTEN__)
-/* C11 _Thread_local */
-#define MPQFS_THREAD_LOCAL _Thread_local
-#elif defined(__GNUC__) && !defined(__PS2__) && !defined(__DJGPP__) \
-    && !defined(_3DS) && !defined(__vita__) && !defined(__EMSCRIPTEN__)
-/* GCC / Clang extension (works even in C99 mode on most hosts). */
-#define MPQFS_THREAD_LOCAL __thread
-#elif defined(_MSC_VER)
-/* MSVC */
-#define MPQFS_THREAD_LOCAL __declspec(thread)
-#else
-/* No TLS — fall back to process-global.  This is correct on any
- * platform that doesn't support threads in the first place. */
-#define MPQFS_THREAD_LOCAL /* nothing */
-#endif
-
-/* -----------------------------------------------------------------------
- * 4.  MPQFS_HAS_FDOPEN
+ * 3.  MPQFS_HAS_FDOPEN
  *
  *     Set to 1 when fdopen() (or _fdopen on MSVC) is available.
  *     Platforms without POSIX file-descriptor semantics should not
@@ -101,7 +66,7 @@
 #endif
 
 /* -----------------------------------------------------------------------
- * 5.  Endianness detection
+ * 4.  Endianness detection
  *
  *     MPQ archives are little-endian.  All known DevilutionX targets are
  *     little-endian as well.  We detect and assert this at compile time
@@ -138,7 +103,7 @@
 #endif
 
 /* -----------------------------------------------------------------------
- * 6.  Byte-swap helpers (for future big-endian support)
+ * 5.  Byte-swap helpers (for future big-endian support)
  *
  *     On LE these are identity operations and should be fully optimised
  *     out.  On BE they perform the swap.
@@ -166,7 +131,7 @@ static inline uint32_t mpqfs_le32(uint32_t v)
 }
 
 /* -----------------------------------------------------------------------
- * 7.  Read little-endian integers from an unaligned byte pointer.
+ * 6.  Read little-endian integers from an unaligned byte pointer.
  *
  *     These never rely on aliasing or alignment and are safe on every
  *     architecture.
@@ -188,7 +153,7 @@ static inline uint32_t mpqfs_read_le32(const void *p)
 }
 
 /* -----------------------------------------------------------------------
- * 8.  Write little-endian integers to an unaligned byte pointer.
+ * 7.  Write little-endian integers to an unaligned byte pointer.
  * ----------------------------------------------------------------------- */
 
 static inline void mpqfs_write_le16(void *p, uint16_t v)
@@ -208,7 +173,7 @@ static inline void mpqfs_write_le32(void *p, uint32_t v)
 }
 
 /* -----------------------------------------------------------------------
- * 9.  Compile-time assertion (works in C99 and C++11+)
+ * 8.  Compile-time assertion (works in C99 and C++11+)
  *
  *     C11 has _Static_assert, C++11 has static_assert.  For C99 we
  *     fall back to the negative-array-size trick.
@@ -228,13 +193,13 @@ static inline void mpqfs_write_le32(void *p, uint32_t v)
 #endif
 
 /* -----------------------------------------------------------------------
- * 10. MPQFS_UNUSED — silence "unused parameter" warnings portably.
+ * 9.  MPQFS_UNUSED — silence "unused parameter" warnings portably.
  * ----------------------------------------------------------------------- */
 
 #define MPQFS_UNUSED(x) ((void)(x))
 
 /* -----------------------------------------------------------------------
- * 11. MPQFS_API — symbol visibility for shared / static library builds.
+ * 10. MPQFS_API — symbol visibility for shared / static library builds.
  *
  *     When the library is built as a static archive (the common case for
  *     game engines), all of these should expand to nothing.  We default
@@ -259,7 +224,7 @@ static inline void mpqfs_write_le32(void *p, uint32_t v)
 #endif
 
 /* -----------------------------------------------------------------------
- * 12. Struct packing — used for on-disk MPQ structures.
+ * 11. Struct packing — used for on-disk MPQ structures.
  *
  *     Usage:
  *       MPQFS_PACK_BEGIN
@@ -286,26 +251,5 @@ static inline void mpqfs_write_le32(void *p, uint32_t v)
 #define MPQFS_PACK_END   /* nothing */
 #define MPQFS_PACKED     /* nothing */
 #endif
-
-/* -----------------------------------------------------------------------
- * 13. Format-string attribute for printf-like functions.
- * ----------------------------------------------------------------------- */
-
-#if defined(__GNUC__) || defined(__clang__)
-#define MPQFS_PRINTF_ATTR(fmt_idx, va_idx) \
-	__attribute__((format(printf, fmt_idx, va_idx)))
-#else
-#define MPQFS_PRINTF_ATTR(fmt_idx, va_idx) /* nothing */
-#endif
-
-/* -----------------------------------------------------------------------
- * 14. Inline hint for C99 / C++ compatibility.
- *
- *     In C99 "inline" alone does not guarantee a single definition;
- *     "static inline" is the portable pattern for header-only helpers.
- *     This macro is provided for documentation clarity.
- * ----------------------------------------------------------------------- */
-
-#define MPQFS_INLINE static inline
 
 #endif /* MPQFS_MPQ_PLATFORM_H */

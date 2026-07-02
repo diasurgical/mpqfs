@@ -72,9 +72,10 @@ target_link_libraries(my_game PRIVATE mpqfs::mpqfs)
 ```c
 #include <mpqfs/mpqfs.h>
 
-mpqfs_archive_t *archive = mpqfs_open("DIABDAT.MPQ");
-if (!archive) {
-    fprintf(stderr, "failed to open archive: %s\n", mpqfs_last_error());
+mpqfs_archive_t *archive;
+mpqfs_error_code rc = mpqfs_open("DIABDAT.MPQ", &archive);
+if (rc != MPQFS_OK) {
+    fprintf(stderr, "failed to open archive: %s\n", mpqfs_error_message(rc));
     return 1;
 }
 
@@ -84,9 +85,9 @@ if (mpqfs_has_file(archive, "levels\\l1data\\l1.min")) {
 }
 
 /* Read a whole file into memory */
-size_t size = 0;
-void *data = mpqfs_read_file(archive, "ui_art\\title.pcx", &size);
-if (data) {
+void *data;
+size_t size;
+if (mpqfs_read_file(archive, "ui_art\\title.pcx", &data, &size) == MPQFS_OK) {
     /* use data (size bytes) ... */
     free(data);
 }
@@ -99,17 +100,19 @@ mpqfs_close(archive);
 ```c
 #include <mpqfs/mpqfs.h>
 
-mpqfs_writer_t *writer = mpqfs_writer_create("save.sv", 16);
-if (!writer) {
-    fprintf(stderr, "failed to create archive: %s\n", mpqfs_last_error());
+mpqfs_writer_t *writer;
+mpqfs_error_code rc = mpqfs_writer_create("save.sv", 16, &writer);
+if (rc != MPQFS_OK) {
+    fprintf(stderr, "failed to create archive: %s\n", mpqfs_error_message(rc));
     return 1;
 }
 
 mpqfs_writer_add_file(writer, "hero", hero_data, hero_size);
 mpqfs_writer_add_file(writer, "game", game_data, game_size);
 
-if (!mpqfs_writer_close(writer)) {
-    fprintf(stderr, "failed to write archive: %s\n", mpqfs_last_error());
+rc = mpqfs_writer_close(writer);
+if (rc != MPQFS_OK) {
+    fprintf(stderr, "failed to write archive: %s\n", mpqfs_error_message(rc));
     return 1;
 }
 /* writer is freed by close — do not use it after this point */
@@ -118,12 +121,14 @@ if (!mpqfs_writer_close(writer)) {
 ### Streaming (large files)
 
 ```c
-mpqfs_stream_t *stream = mpqfs_stream_open(archive, "sfx\\misc\\fire01.wav");
-if (!stream) { /* handle error */ }
+mpqfs_stream_t *stream;
+if (mpqfs_stream_open(archive, "sfx\\misc\\fire01.wav", &stream) != MPQFS_OK) {
+    /* handle error */
+}
 
 uint8_t buf[4096];
 size_t n;
-while ((n = mpqfs_stream_read(stream, buf, sizeof(buf))) > 0) {
+while (mpqfs_stream_read(stream, buf, sizeof(buf), &n) == MPQFS_OK && n > 0) {
     /* process chunk ... */
 }
 
@@ -162,54 +167,56 @@ Key portability properties:
 
 The public API is defined in a single header: `<mpqfs/mpqfs.h>`. See the header for full doc-comments on every function.
 
+Every fallible function returns an `mpqfs_error_code` (`MPQFS_OK` on success); the value it used to return directly is now written through a trailing out-parameter. Existence-style queries (`mpqfs_has_file`, `mpqfs_has_file_hash`, `mpqfs_writer_has_file`, `mpqfs_find_hash`) are unaffected — they still return their result directly, since "not found" isn't an error.
+
 ### Archive lifecycle
 
 | Function | Description |
 |----------|-------------|
-| `mpqfs_open(path)` | Open from a filesystem path. |
-| `mpqfs_open_fp(fp)` | Open from a `FILE*` (caller retains ownership). |
-| `mpqfs_open_fd(fd)` | Open from a file descriptor (library takes ownership). Only on platforms with `fdopen`. |
-| `mpqfs_clone(archive)` | Create an independent clone with its own `FILE*` for thread-safe concurrent reads. |
+| `mpqfs_open(path, &archive)` | Open from a filesystem path. |
+| `mpqfs_open_fp(fp, &archive)` | Open from a `FILE*` (caller retains ownership). |
+| `mpqfs_open_fd(fd, &archive)` | Open from a file descriptor (library takes ownership). Only on platforms with `fdopen`. |
+| `mpqfs_clone(archive, &clone)` | Create an independent clone with its own `FILE*` for thread-safe concurrent reads. |
 | `mpqfs_close(archive)` | Close and free all resources. NULL-safe. |
 
 ### File queries
 
 | Function | Description |
 |----------|-------------|
-| `mpqfs_has_file(archive, filename)` | Check if a file exists. |
-| `mpqfs_file_size(archive, filename)` | Get uncompressed size (0 if not found). |
-| `mpqfs_find_hash(archive, filename)` | Look up a file and return its hash table index (`UINT32_MAX` if not found). |
-| `mpqfs_has_file_hash(archive, hash)` | Check existence by hash table index. |
-| `mpqfs_file_size_from_hash(archive, hash)` | Get size by hash table index. |
+| `mpqfs_has_file(archive, filename)` | Check if a file exists. Returns `bool` directly. |
+| `mpqfs_file_size(archive, filename, &size)` | Get uncompressed size. |
+| `mpqfs_find_hash(archive, filename)` | Look up a file and return its hash table index (`UINT32_MAX` if not found). Returns `uint32_t` directly. |
+| `mpqfs_has_file_hash(archive, hash)` | Check existence by hash table index. Returns `bool` directly. |
+| `mpqfs_file_size_from_hash(archive, hash, &size)` | Get size by hash table index. |
 
 ### Reading files
 
 | Function | Description |
 |----------|-------------|
-| `mpqfs_read_file(archive, filename, &size)` | Read entire file into a `malloc`'d buffer. Caller must `free()`. |
-| `mpqfs_read_file_into(archive, filename, buf, buf_size)` | Read entire file into a caller-supplied buffer. |
+| `mpqfs_read_file(archive, filename, &data, &size)` | Read entire file into a `malloc`'d buffer. Caller must `free()`. |
+| `mpqfs_read_file_into(archive, filename, buf, buf_size, &bytes_read)` | Read entire file into a caller-supplied buffer. |
 
 ### Streaming
 
 | Function | Description |
 |----------|-------------|
-| `mpqfs_stream_open(archive, filename)` | Open a seekable read-only stream. Only one sector is held in memory. |
-| `mpqfs_stream_open_from_hash(archive, hash)` | Open a stream by hash table index (avoids rehashing). |
-| `mpqfs_stream_read(stream, buf, count)` | Read up to `count` bytes. Returns bytes read, or `(size_t)-1` on error. |
-| `mpqfs_stream_seek(stream, offset, whence)` | Seek (`SEEK_SET` / `SEEK_CUR` / `SEEK_END`). Returns new position or -1. |
-| `mpqfs_stream_tell(stream)` | Current read position. |
-| `mpqfs_stream_size(stream)` | Total uncompressed size. |
+| `mpqfs_stream_open(archive, filename, &stream)` | Open a seekable read-only stream. Only one sector is held in memory. |
+| `mpqfs_stream_open_from_hash(archive, hash, &stream)` | Open a stream by hash table index (avoids rehashing). |
+| `mpqfs_stream_read(stream, buf, count, &bytes_read)` | Read up to `count` bytes. |
+| `mpqfs_stream_seek(stream, offset, whence, &position)` | Seek (`SEEK_SET` / `SEEK_CUR` / `SEEK_END`). |
+| `mpqfs_stream_tell(stream, &position)` | Current read position. |
+| `mpqfs_stream_size(stream, &size)` | Total uncompressed size. |
 | `mpqfs_stream_close(stream)` | Close stream. NULL-safe. Does not close the archive. |
 
 ### Writing archives
 
 | Function | Description |
 |----------|-------------|
-| `mpqfs_writer_create(path, hash_table_size)` | Create a writer targeting a filesystem path. |
-| `mpqfs_writer_create_fp(fp, hash_table_size)` | Create from a `FILE*` (caller retains ownership). |
-| `mpqfs_writer_create_fd(fd, hash_table_size)` | Create from a file descriptor. Only on platforms with `fdopen`. |
+| `mpqfs_writer_create(path, hash_table_size, &writer)` | Create a writer targeting a filesystem path. |
+| `mpqfs_writer_create_fp(fp, hash_table_size, &writer)` | Create from a `FILE*` (caller retains ownership). |
+| `mpqfs_writer_create_fd(fd, hash_table_size, &writer)` | Create from a file descriptor. Only on platforms with `fdopen`. |
 | `mpqfs_writer_add_file(writer, filename, data, size)` | Add a file (data is copied). Compressed with PKWARE DCL implode. |
-| `mpqfs_writer_has_file(writer, filename)` | Check if a file has been added. |
+| `mpqfs_writer_has_file(writer, filename)` | Check if a file has been added. Returns `bool` directly. |
 | `mpqfs_writer_rename_file(writer, old, new)` | Rename a previously added file. |
 | `mpqfs_writer_remove_file(writer, filename)` | Remove a previously added file. |
 | `mpqfs_writer_carry_forward(writer, filename, archive, block_index)` | Copy a file from an existing archive without recompression. |
@@ -237,9 +244,13 @@ These are exposed for consumers that need low-level MPQ operations:
 
 ### Error handling
 
+Every fallible function returns an `mpqfs_error_code`. `MPQFS_OK` (0) means success; any other value is an error and no output parameter is valid. Use `mpqfs_error_message()` to get a static, human-readable description of a code — it does not carry call-specific detail (e.g. which filename or errno was involved), only the general category of failure.
+
 | Function | Description |
 |----------|-------------|
-| `mpqfs_last_error()` | Returns a human-readable error string, or NULL. Thread-safe on platforms with TLS. |
+| `mpqfs_error_message(code)` | Returns a static, human-readable description of an `mpqfs_error_code`. Never NULL. |
+
+Error codes: `MPQFS_OK`, `MPQFS_ERR_INVALID_ARGUMENT`, `MPQFS_ERR_OUT_OF_MEMORY`, `MPQFS_ERR_IO`, `MPQFS_ERR_NOT_MPQ`, `MPQFS_ERR_UNSUPPORTED_VERSION`, `MPQFS_ERR_CORRUPT_ARCHIVE`, `MPQFS_ERR_FILE_NOT_FOUND`, `MPQFS_ERR_INVALID_HASH`, `MPQFS_ERR_ENCRYPTED_NO_KEY`, `MPQFS_ERR_UNSUPPORTED_COMPRESSION`, `MPQFS_ERR_DECOMPRESS_FAILED`, `MPQFS_ERR_BUFFER_TOO_SMALL`, `MPQFS_ERR_HASH_TABLE_FULL`, `MPQFS_ERR_NO_PATH`.
 
 ## Running tests
 

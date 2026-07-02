@@ -50,42 +50,9 @@
 #include "mpq_platform.h"
 #include "mpq_writer.h"
 
-#include <errno.h>
-#include <stdarg.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
-
-/* -----------------------------------------------------------------------
- * Error helpers
- * ----------------------------------------------------------------------- */
-
-/* Defined in mpq_archive.c — we use it to mirror errors to the
- * thread-local g_last_error. */
-
-void mpq_writer_set_error(mpqfs_writer_t *writer, const char *fmt, ...)
-{
-	va_list ap;
-	va_start(ap, fmt);
-
-	if (writer) {
-		vsnprintf(writer->error, sizeof(writer->error), fmt, ap);
-	}
-
-	va_end(ap);
-
-	/* Also mirror into the thread-local last-error so
-	 * mpqfs_last_error() picks it up. */
-	va_start(ap, fmt);
-	/* We can't easily call mpq_set_error with a va_list, so we
-	 * just format directly into the writer and then copy via
-	 * mpq_set_error with the pre-formatted string. */
-	va_end(ap);
-
-	if (writer) {
-		mpq_set_error(NULL, "%s", writer->error);
-	}
-}
 
 /* -----------------------------------------------------------------------
  * Internal: round up to the next power of two (minimum 1)
@@ -123,16 +90,17 @@ static char *MpqStrdup(const char *s)
  * Internal: shared writer init after the FILE* is obtained
  * ----------------------------------------------------------------------- */
 
-static mpqfs_writer_t *MpqWriterInit(FILE *fp, int ownsFd,
+static mpqfs_error_code MpqWriterInit(FILE *fp, int ownsFd,
     uint32_t hashTableSize,
-    const char *sourceName)
+    mpqfs_writer_t **outWriter)
 {
+	*outWriter = NULL;
+
 	mpqfs_writer_t *writer = (mpqfs_writer_t *)calloc(1, sizeof(*writer));
 	if (!writer) {
-		mpq_set_error(NULL, "%s: out of memory", sourceName);
 		if (ownsFd && fp)
 			fclose(fp);
-		return NULL;
+		return MPQFS_ERR_OUT_OF_MEMORY;
 	}
 
 	writer->fp = fp;
@@ -153,12 +121,10 @@ static mpqfs_writer_t *MpqWriterInit(FILE *fp, int ownsFd,
 	writer->files = (mpqfs_writer_file_t *)calloc(writer->file_capacity,
 	    sizeof(mpqfs_writer_file_t));
 	if (!writer->files) {
-		mpq_writer_set_error(writer, "%s: out of memory for file list",
-		    sourceName);
 		if (ownsFd && fp)
 			fclose(fp);
 		free(writer);
-		return NULL;
+		return MPQFS_ERR_OUT_OF_MEMORY;
 	}
 
 	/* Compute data_start: header + block table + hash table.
@@ -173,109 +139,100 @@ static mpqfs_writer_t *MpqWriterInit(FILE *fp, int ownsFd,
 	 * The header and tables will be overwritten with real data during
 	 * mpqfs_writer_close(). */
 	if (fseek(fp, 0, SEEK_SET) != 0) {
-		mpq_writer_set_error(writer, "%s: initial seek failed: %s",
-		    sourceName, strerror(errno));
 		if (ownsFd && fp)
 			fclose(fp);
 		free(writer->files);
 		free(writer);
-		return NULL;
+		return MPQFS_ERR_IO;
 	}
 	{
 		uint8_t *zeroes = (uint8_t *)calloc(1, writer->data_start);
 		if (!zeroes) {
-			mpq_writer_set_error(writer,
-			    "%s: out of memory for placeholder", sourceName);
 			if (ownsFd && fp)
 				fclose(fp);
 			free(writer->files);
 			free(writer);
-			return NULL;
+			return MPQFS_ERR_OUT_OF_MEMORY;
 		}
 		size_t n = writer->data_start;
 		if (fwrite(zeroes, 1, n, fp) != n) {
-			mpq_writer_set_error(writer,
-			    "%s: failed to write placeholder: %s",
-			    sourceName, strerror(errno));
 			free(zeroes);
 			if (ownsFd && fp)
 				fclose(fp);
 			free(writer->files);
 			free(writer);
-			return NULL;
+			return MPQFS_ERR_IO;
 		}
 		free(zeroes);
 	}
 
-	return writer;
+	*outWriter = writer;
+	return MPQFS_OK;
 }
 
 /* -----------------------------------------------------------------------
  * Public API: create a writer
  * ----------------------------------------------------------------------- */
 
-mpqfs_writer_t *mpqfs_writer_create(const char *path,
-    uint32_t hashTableSize)
+mpqfs_error_code mpqfs_writer_create(const char *path,
+    uint32_t hashTableSize, mpqfs_writer_t **outWriter)
 {
+	*outWriter = NULL;
+
 	mpq_crypto_init();
 
 	if (!path) {
-		mpq_set_error(NULL, "mpqfs_writer_create: path is NULL");
-		return NULL;
+		return MPQFS_ERR_INVALID_ARGUMENT;
 	}
 
 	FILE *fp = fopen(path, "wb");
 	if (!fp) {
-		mpq_set_error(NULL, "mpqfs_writer_create: cannot open '%s': %s",
-		    path, strerror(errno));
-		return NULL;
+		return MPQFS_ERR_IO;
 	}
 
 #ifdef MPQFS_FILE_BUFFER_SIZE
 	if (setvbuf(fp, NULL, _IOFBF, MPQFS_FILE_BUFFER_SIZE) != 0) {
-		mpq_set_error(NULL, "mpqfs_writer_create: cannot set buffer size: %s",
-		    strerror(errno));
 		fclose(fp);
-		return NULL;
+		return MPQFS_ERR_IO;
 	}
 #endif
 
-	return MpqWriterInit(fp, 1, hashTableSize, "mpqfs_writer_create");
+	return MpqWriterInit(fp, 1, hashTableSize, outWriter);
 }
 
-mpqfs_writer_t *mpqfs_writer_create_fp(FILE *fp,
-    uint32_t hashTableSize)
+mpqfs_error_code mpqfs_writer_create_fp(FILE *fp,
+    uint32_t hashTableSize, mpqfs_writer_t **outWriter)
 {
+	*outWriter = NULL;
+
 	mpq_crypto_init();
 
 	if (!fp) {
-		mpq_set_error(NULL, "mpqfs_writer_create_fp: fp is NULL");
-		return NULL;
+		return MPQFS_ERR_INVALID_ARGUMENT;
 	}
 
-	return MpqWriterInit(fp, 0, hashTableSize, "mpqfs_writer_create_fp");
+	return MpqWriterInit(fp, 0, hashTableSize, outWriter);
 }
 
 #if MPQFS_HAS_FDOPEN
 
-mpqfs_writer_t *mpqfs_writer_create_fd(int fd,
-    uint32_t hashTableSize)
+mpqfs_error_code mpqfs_writer_create_fd(int fd,
+    uint32_t hashTableSize, mpqfs_writer_t **outWriter)
 {
+	*outWriter = NULL;
+
 	mpq_crypto_init();
 
 	if (fd < 0) {
-		mpq_set_error(NULL, "mpqfs_writer_create_fd: invalid file descriptor");
-		return NULL;
+		return MPQFS_ERR_INVALID_ARGUMENT;
 	}
 
 	FILE *fp = fdopen(fd, "wb");
 	if (!fp) {
-		mpq_set_error(NULL, "mpqfs_writer_create_fd: fdopen failed: %s",
-		    strerror(errno));
-		return NULL;
+		return MPQFS_ERR_IO;
 	}
 
-	return MpqWriterInit(fp, 1, hashTableSize, "mpqfs_writer_create_fd");
+	return MpqWriterInit(fp, 1, hashTableSize, outWriter);
 }
 
 #endif /* MPQFS_HAS_FDOPEN */
@@ -299,12 +256,12 @@ static int MpqRawWrite(FILE *fp, const void *buf, size_t count)
  * The compressed data (sector offset table + compressed sectors) is
  * written to |fp| at the current file position.  On success the
  * metadata fields of |entry| are filled in (offset, compressed_size,
- * file_size, flags) and 0 is returned.  On failure -1 is returned.
+ * file_size, flags) and MPQFS_OK is returned.
  *
  * For zero-length files nothing is written and compressed_size is 0.
  * ----------------------------------------------------------------------- */
 
-static int MpqCompressAndWriteFile(FILE *fp,
+static mpqfs_error_code MpqCompressAndWriteFile(FILE *fp,
     const uint8_t *fileData, uint32_t fileSize,
     uint16_t sectorSizeShift,
     uint32_t fileOffset,
@@ -323,7 +280,7 @@ static int MpqCompressAndWriteFile(FILE *fp,
 	if (fileSize == 0) {
 		entry->compressed_size = 0;
 		entry->flags = MPQ_FILE_EXISTS;
-		return 0;
+		return MPQFS_OK;
 	}
 
 	uint32_t sectorCount = (fileSize + sectorSize - 1) / sectorSize;
@@ -337,13 +294,13 @@ static int MpqCompressAndWriteFile(FILE *fp,
 
 	uint8_t *buf = (uint8_t *)malloc(maxOut);
 	if (!buf)
-		return -1;
+		return MPQFS_ERR_OUT_OF_MEMORY;
 
 	/* We'll fill in the offset table after compressing all sectors. */
 	uint32_t *offsetTable = (uint32_t *)malloc(offsetTableEntries * sizeof(uint32_t));
 	if (!offsetTable) {
 		free(buf);
-		return -1;
+		return MPQFS_ERR_OUT_OF_MEMORY;
 	}
 
 	/* Compress each sector. */
@@ -402,12 +359,12 @@ static int MpqCompressAndWriteFile(FILE *fp,
 	free(buf);
 
 	if (writeOk != 0)
-		return -1;
+		return MPQFS_ERR_IO;
 
 	entry->compressed_size = totalSize;
 	entry->flags = flags;
 
-	return 0;
+	return MPQFS_OK;
 }
 
 /* -----------------------------------------------------------------------
@@ -417,35 +374,22 @@ static int MpqCompressAndWriteFile(FILE *fp,
  * the per-file metadata is retained in RAM.
  * ----------------------------------------------------------------------- */
 
-bool mpqfs_writer_add_file(mpqfs_writer_t *writer, const char *filename,
+mpqfs_error_code mpqfs_writer_add_file(mpqfs_writer_t *writer, const char *filename,
     const void *data, size_t size)
 {
 	if (!writer || !filename) {
-		if (writer) {
-			mpq_writer_set_error(writer,
-			    "mpqfs_writer_add_file: invalid arguments");
-		} else {
-			mpq_set_error(NULL, "mpqfs_writer_add_file: writer is NULL");
-		}
-		return false;
+		return MPQFS_ERR_INVALID_ARGUMENT;
 	}
 
 	if (!data && size > 0) {
-		mpq_writer_set_error(writer,
-		    "mpqfs_writer_add_file: data is NULL with "
-		    "non-zero size");
-		return false;
+		return MPQFS_ERR_INVALID_ARGUMENT;
 	}
 
 	/* Check that we haven't exceeded the hash table capacity.
 	 * We need at least one empty slot for the hash table probe chain
 	 * to terminate, so limit to (hash_table_size - 1) files. */
 	if (writer->file_count >= writer->hash_table_size - 1) {
-		mpq_writer_set_error(writer,
-		    "mpqfs_writer_add_file: hash table full "
-		    "(%" PRIu32 " files, table size %" PRIu32 ")",
-		    writer->file_count, writer->hash_table_size);
-		return false;
+		return MPQFS_ERR_HASH_TABLE_FULL;
 	}
 
 	/* Grow the files array if needed. */
@@ -454,9 +398,7 @@ bool mpqfs_writer_add_file(mpqfs_writer_t *writer, const char *filename,
 		mpqfs_writer_file_t *newFiles = (mpqfs_writer_file_t *)realloc(writer->files,
 		    newCap * sizeof(mpqfs_writer_file_t));
 		if (!newFiles) {
-			mpq_writer_set_error(writer,
-			    "mpqfs_writer_add_file: out of memory");
-			return false;
+			return MPQFS_ERR_OUT_OF_MEMORY;
 		}
 		/* Zero out the newly allocated portion. */
 		memset(newFiles + writer->file_capacity, 0,
@@ -468,35 +410,29 @@ bool mpqfs_writer_add_file(mpqfs_writer_t *writer, const char *filename,
 	/* Make an owned copy of the filename. */
 	char *nameCopy = MpqStrdup(filename);
 	if (!nameCopy) {
-		mpq_writer_set_error(writer,
-		    "mpqfs_writer_add_file: out of memory for name");
-		return false;
+		return MPQFS_ERR_OUT_OF_MEMORY;
 	}
 
 	/* Compress the file data and write it to disk at data_cursor. */
 	mpqfs_writer_file_t *entry = &writer->files[writer->file_count];
 	entry->filename = nameCopy;
 
-	if (MpqCompressAndWriteFile(writer->fp,
-	        (const uint8_t *)data, (uint32_t)size,
-	        writer->sector_size_shift,
-	        writer->data_cursor,
-	        entry)
-	    != 0) {
+	mpqfs_error_code rc = MpqCompressAndWriteFile(writer->fp,
+	    (const uint8_t *)data, (uint32_t)size,
+	    writer->sector_size_shift,
+	    writer->data_cursor,
+	    entry);
+	if (rc != MPQFS_OK) {
 		free(nameCopy);
 		entry->filename = NULL;
-		mpq_writer_set_error(writer,
-		    "mpqfs_writer_add_file: failed to compress/write "
-		    "file '%s'",
-		    filename);
-		return false;
+		return rc;
 	}
 
 	/* Advance the data cursor past the data we just wrote. */
 	writer->data_cursor += entry->compressed_size;
 
 	writer->file_count++;
-	return true;
+	return MPQFS_OK;
 }
 
 /* -----------------------------------------------------------------------
@@ -531,12 +467,12 @@ bool mpqfs_writer_has_file(const mpqfs_writer_t *writer,
  * Public API: rename a file in the writer metadata
  * ----------------------------------------------------------------------- */
 
-bool mpqfs_writer_rename_file(mpqfs_writer_t *writer,
+mpqfs_error_code mpqfs_writer_rename_file(mpqfs_writer_t *writer,
     const char *old_name,
     const char *new_name)
 {
 	if (!writer || !old_name || !new_name)
-		return false;
+		return MPQFS_ERR_INVALID_ARGUMENT;
 
 	uint32_t nameA = mpq_hash_string(old_name, MPQ_HASH_NAME_A);
 	uint32_t nameB = mpq_hash_string(old_name, MPQ_HASH_NAME_B);
@@ -556,28 +492,26 @@ bool mpqfs_writer_rename_file(mpqfs_writer_t *writer,
 		if (match) {
 			char *nameCopy = MpqStrdup(new_name);
 			if (!nameCopy) {
-				mpq_writer_set_error(writer,
-				    "mpqfs_writer_rename_file: out of memory");
-				return false;
+				return MPQFS_ERR_OUT_OF_MEMORY;
 			}
 			free(writer->files[i].filename);
 			writer->files[i].filename = nameCopy;
 			writer->files[i].has_raw_hashes = 0;
-			return true;
+			return MPQFS_OK;
 		}
 	}
-	return false;
+	return MPQFS_ERR_FILE_NOT_FOUND;
 }
 
 /* -----------------------------------------------------------------------
  * Public API: remove a file from the writer metadata
  * ----------------------------------------------------------------------- */
 
-bool mpqfs_writer_remove_file(mpqfs_writer_t *writer,
+mpqfs_error_code mpqfs_writer_remove_file(mpqfs_writer_t *writer,
     const char *filename)
 {
 	if (!writer || !filename)
-		return false;
+		return MPQFS_ERR_INVALID_ARGUMENT;
 
 	uint32_t nameA = mpq_hash_string(filename, MPQ_HASH_NAME_A);
 	uint32_t nameB = mpq_hash_string(filename, MPQ_HASH_NAME_B);
@@ -596,52 +530,38 @@ bool mpqfs_writer_remove_file(mpqfs_writer_t *writer,
 
 		if (match) {
 			writer->files[i].removed = 1;
-			return true;
+			return MPQFS_OK;
 		}
 	}
-	return false;
+	return MPQFS_ERR_FILE_NOT_FOUND;
 }
 
 /* -----------------------------------------------------------------------
  * Public API: copy a file from an existing archive (raw, no recompress)
  * ----------------------------------------------------------------------- */
 
-bool mpqfs_writer_carry_forward(mpqfs_writer_t *writer,
+mpqfs_error_code mpqfs_writer_carry_forward(mpqfs_writer_t *writer,
     const char *filename,
     mpqfs_archive_t *archive,
     uint32_t block_index)
 {
 	if (!writer || !filename || !archive) {
-		if (writer) {
-			mpq_writer_set_error(writer,
-			    "mpqfs_writer_carry_forward: invalid arguments");
-		} else {
-			mpq_set_error(NULL, "mpqfs_writer_carry_forward: writer is NULL");
-		}
-		return false;
+		return MPQFS_ERR_INVALID_ARGUMENT;
 	}
 
 	if (block_index >= archive->header.block_table_count) {
-		mpq_writer_set_error(writer,
-		    "mpqfs_writer_carry_forward: block_index %" PRIu32 " out of range",
-		    block_index);
-		return false;
+		return MPQFS_ERR_INVALID_ARGUMENT;
 	}
 
 	const mpq_block_entry_t *blk = &archive->block_table[block_index];
 
 	if (!(blk->flags & MPQ_FILE_EXISTS)) {
-		mpq_writer_set_error(writer,
-		    "mpqfs_writer_carry_forward: block %" PRIu32 " not in use",
-		    block_index);
-		return false;
+		return MPQFS_ERR_FILE_NOT_FOUND;
 	}
 
 	/* Check hash table capacity. */
 	if (writer->file_count >= writer->hash_table_size - 1) {
-		mpq_writer_set_error(writer,
-		    "mpqfs_writer_carry_forward: hash table full");
-		return false;
+		return MPQFS_ERR_HASH_TABLE_FULL;
 	}
 
 	/* Grow the files array if needed. */
@@ -650,9 +570,7 @@ bool mpqfs_writer_carry_forward(mpqfs_writer_t *writer,
 		mpqfs_writer_file_t *newFiles = (mpqfs_writer_file_t *)realloc(
 		    writer->files, newCap * sizeof(mpqfs_writer_file_t));
 		if (!newFiles) {
-			mpq_writer_set_error(writer,
-			    "mpqfs_writer_carry_forward: out of memory");
-			return false;
+			return MPQFS_ERR_OUT_OF_MEMORY;
 		}
 		memset(newFiles + writer->file_capacity, 0,
 		    (newCap - writer->file_capacity) * sizeof(mpqfs_writer_file_t));
@@ -662,9 +580,7 @@ bool mpqfs_writer_carry_forward(mpqfs_writer_t *writer,
 
 	char *nameCopy = MpqStrdup(filename);
 	if (!nameCopy) {
-		mpq_writer_set_error(writer,
-		    "mpqfs_writer_carry_forward: out of memory for name");
-		return false;
+		return MPQFS_ERR_OUT_OF_MEMORY;
 	}
 
 	uint32_t rawSize = blk->compressed_size;
@@ -673,9 +589,7 @@ bool mpqfs_writer_carry_forward(mpqfs_writer_t *writer,
 	uint8_t *rawBuf = (uint8_t *)malloc(rawSize);
 	if (!rawBuf) {
 		free(nameCopy);
-		mpq_writer_set_error(writer,
-		    "mpqfs_writer_carry_forward: out of memory for raw data");
-		return false;
+		return MPQFS_ERR_OUT_OF_MEMORY;
 	}
 
 	if (fseek(archive->fp,
@@ -683,26 +597,20 @@ bool mpqfs_writer_carry_forward(mpqfs_writer_t *writer,
 	    != 0) {
 		free(rawBuf);
 		free(nameCopy);
-		mpq_writer_set_error(writer,
-		    "mpqfs_writer_carry_forward: seek failed on source");
-		return false;
+		return MPQFS_ERR_IO;
 	}
 
 	if (fread(rawBuf, 1, rawSize, archive->fp) != rawSize) {
 		free(rawBuf);
 		free(nameCopy);
-		mpq_writer_set_error(writer,
-		    "mpqfs_writer_carry_forward: read failed on source");
-		return false;
+		return MPQFS_ERR_IO;
 	}
 
 	/* Write the raw data to the new archive at data_cursor. */
 	if (MpqRawWrite(writer->fp, rawBuf, rawSize) != 0) {
 		free(rawBuf);
 		free(nameCopy);
-		mpq_writer_set_error(writer,
-		    "mpqfs_writer_carry_forward: write failed");
-		return false;
+		return MPQFS_ERR_IO;
 	}
 
 	free(rawBuf);
@@ -719,17 +627,16 @@ bool mpqfs_writer_carry_forward(mpqfs_writer_t *writer,
 	writer->data_cursor += rawSize;
 	writer->file_count++;
 
-	return true;
+	return MPQFS_OK;
 }
 
 /* -----------------------------------------------------------------------
  * Internal: read raw compressed data for a block and write it to the
- * writer's output file at data_cursor.  Returns 0 on success, -1 on
- * failure.  On success, *out_raw_size receives the number of bytes
- * written.
+ * writer's output file at data_cursor.  On success, *out_raw_size
+ * receives the number of bytes written.
  * ----------------------------------------------------------------------- */
 
-static int MpqCopyRawBlock(mpqfs_writer_t *writer,
+static mpqfs_error_code MpqCopyRawBlock(mpqfs_writer_t *writer,
     mpqfs_archive_t *archive,
     const mpq_block_entry_t *blk,
     uint32_t *out_raw_size)
@@ -738,45 +645,39 @@ static int MpqCopyRawBlock(mpqfs_writer_t *writer,
 
 	uint8_t *rawBuf = (uint8_t *)malloc(rawSize);
 	if (!rawBuf)
-		return -1;
+		return MPQFS_ERR_OUT_OF_MEMORY;
 
 	if (fseek(archive->fp,
 	        (long)(archive->archive_offset + blk->offset), SEEK_SET)
 	    != 0) {
 		free(rawBuf);
-		return -1;
+		return MPQFS_ERR_IO;
 	}
 
 	if (fread(rawBuf, 1, rawSize, archive->fp) != rawSize) {
 		free(rawBuf);
-		return -1;
+		return MPQFS_ERR_IO;
 	}
 
 	if (MpqRawWrite(writer->fp, rawBuf, rawSize) != 0) {
 		free(rawBuf);
-		return -1;
+		return MPQFS_ERR_IO;
 	}
 
 	free(rawBuf);
 	*out_raw_size = rawSize;
-	return 0;
+	return MPQFS_OK;
 }
 
 /* -----------------------------------------------------------------------
  * Public API: carry forward all files from an existing archive
  * ----------------------------------------------------------------------- */
 
-bool mpqfs_writer_carry_forward_all(mpqfs_writer_t *writer,
+mpqfs_error_code mpqfs_writer_carry_forward_all(mpqfs_writer_t *writer,
     mpqfs_archive_t *archive)
 {
 	if (!writer || !archive) {
-		if (writer) {
-			mpq_writer_set_error(writer,
-			    "mpqfs_writer_carry_forward_all: invalid arguments");
-		} else {
-			mpq_set_error(NULL, "mpqfs_writer_carry_forward_all: writer is NULL");
-		}
-		return false;
+		return MPQFS_ERR_INVALID_ARGUMENT;
 	}
 
 	uint32_t hashCount = archive->header.hash_table_count;
@@ -827,9 +728,7 @@ bool mpqfs_writer_carry_forward_all(mpqfs_writer_t *writer,
 
 		/* Check capacity. */
 		if (writer->file_count >= writer->hash_table_size - 1) {
-			mpq_writer_set_error(writer,
-			    "mpqfs_writer_carry_forward_all: hash table full");
-			return false;
+			return MPQFS_ERR_HASH_TABLE_FULL;
 		}
 
 		/* Grow files array if needed. */
@@ -838,9 +737,7 @@ bool mpqfs_writer_carry_forward_all(mpqfs_writer_t *writer,
 			mpqfs_writer_file_t *newFiles = (mpqfs_writer_file_t *)realloc(
 			    writer->files, newCap * sizeof(mpqfs_writer_file_t));
 			if (!newFiles) {
-				mpq_writer_set_error(writer,
-				    "mpqfs_writer_carry_forward_all: out of memory");
-				return false;
+				return MPQFS_ERR_OUT_OF_MEMORY;
 			}
 			memset(newFiles + writer->file_capacity, 0,
 			    (newCap - writer->file_capacity) * sizeof(mpqfs_writer_file_t));
@@ -850,12 +747,9 @@ bool mpqfs_writer_carry_forward_all(mpqfs_writer_t *writer,
 
 		/* Copy raw data from source archive to writer output. */
 		uint32_t rawSize = 0;
-		if (MpqCopyRawBlock(writer, archive, blk, &rawSize) != 0) {
-			mpq_writer_set_error(writer,
-			    "mpqfs_writer_carry_forward_all: failed to copy "
-			    "block %" PRIu32 "",
-			    he->block_index);
-			return false;
+		mpqfs_error_code rc = MpqCopyRawBlock(writer, archive, blk, &rawSize);
+		if (rc != MPQFS_OK) {
+			return rc;
 		}
 
 		/* Record metadata with raw hashes (no filename). */
@@ -875,7 +769,7 @@ bool mpqfs_writer_carry_forward_all(mpqfs_writer_t *writer,
 		writer->file_count++;
 	}
 
-	return true;
+	return MPQFS_OK;
 }
 
 /* -----------------------------------------------------------------------
@@ -1031,19 +925,17 @@ static uint32_t *MpqBuildBlockTable(mpqfs_writer_t *writer)
  *   5. Flush and free resources.
  * ----------------------------------------------------------------------- */
 
-bool mpqfs_writer_close(mpqfs_writer_t *writer)
+mpqfs_error_code mpqfs_writer_close(mpqfs_writer_t *writer)
 {
 	if (!writer) {
-		mpq_set_error(NULL, "mpqfs_writer_close: writer is NULL");
-		return false;
+		return MPQFS_ERR_INVALID_ARGUMENT;
 	}
 
 	FILE *fp = writer->fp;
-	bool success = true;
+	mpqfs_error_code result = MPQFS_OK;
 
 	if (!fp) {
-		mpq_writer_set_error(writer, "mpqfs_writer_close: no file handle");
-		success = false;
+		result = MPQFS_ERR_IO;
 		goto cleanup;
 	}
 
@@ -1063,30 +955,23 @@ bool mpqfs_writer_close(mpqfs_writer_t *writer)
 		uint32_t *blockTable = MpqBuildBlockTable(writer);
 
 		if (!blockTable) {
-			mpq_writer_set_error(writer,
-			    "mpqfs_writer_close: failed to build block table");
-			success = false;
+			result = MPQFS_ERR_OUT_OF_MEMORY;
 			goto cleanup;
 		}
 
 		uint32_t *hashTable = MpqBuildHashTable(writer);
 		if (!hashTable) {
-			mpq_writer_set_error(writer,
-			    "mpqfs_writer_close: failed to build hash table");
 			free(blockTable);
-			success = false;
+			result = MPQFS_ERR_OUT_OF_MEMORY;
 			goto cleanup;
 		}
 
 		/* ---- Write the header and tables ---- */
 
 		if (fseek(fp, 0, SEEK_SET) != 0) {
-			mpq_writer_set_error(writer,
-			    "mpqfs_writer_close: seek failed: %s",
-			    strerror(errno));
 			free(hashTable);
 			free(blockTable);
-			success = false;
+			result = MPQFS_ERR_IO;
 			goto cleanup;
 		}
 
@@ -1106,33 +991,26 @@ bool mpqfs_writer_close(mpqfs_writer_t *writer)
 			mpqfs_write_le32(hdr + 28, hashTableSize);
 
 			if (MpqRawWrite(fp, hdr, sizeof(hdr)) != 0) {
-				mpq_writer_set_error(writer,
-				    "mpqfs_writer_close: failed to write header");
 				free(hashTable);
 				free(blockTable);
-				success = false;
+				result = MPQFS_ERR_IO;
 				goto cleanup;
 			}
 		}
 
 		/* Write the block table. */
 		if (MpqRawWrite(fp, blockTable, tableEntryBytes) != 0) {
-			mpq_writer_set_error(writer,
-			    "mpqfs_writer_close: failed to write "
-			    "block table");
 			free(hashTable);
 			free(blockTable);
-			success = false;
+			result = MPQFS_ERR_IO;
 			goto cleanup;
 		}
 		free(blockTable);
 
 		/* Write the hash table. */
 		if (MpqRawWrite(fp, hashTable, tableEntryBytes) != 0) {
-			mpq_writer_set_error(writer,
-			    "mpqfs_writer_close: failed to write hash table");
 			free(hashTable);
-			success = false;
+			result = MPQFS_ERR_IO;
 			goto cleanup;
 		}
 		free(hashTable);
@@ -1154,7 +1032,7 @@ cleanup:
 		fclose(writer->fp);
 
 	free(writer);
-	return success;
+	return result;
 }
 
 /* -----------------------------------------------------------------------
