@@ -7,18 +7,14 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "mpq_archive.h"
 #include "mpq_crypto.h"
 #include "mpq_platform.h"
 #include "mpq_stream.h"
-
-#include <stdlib.h>
-#include <string.h>
-
-/* Forward declaration — needed because mpqfs_open() references mpqfs_close()
- * for cleanup on error, but mpqfs_close() is defined further below. */
-void mpqfs_close(mpqfs_archive_t *archive);
+#include "mpqfs/mpqfs.h"
 
 /* Portable strdup — avoids reliance on POSIX strdup() which may not be
  * declared in strict C99 mode on all toolchains. */
@@ -30,38 +26,6 @@ static char *MpqfsStrdup(const char *s)
 	if (copy)
 		memcpy(copy, s, len);
 	return copy;
-}
-#include <errno.h>
-#include <stdarg.h>
-
-/* Thread-local last-error for the public API (used when no archive context).
- * On single-threaded platforms (DOS, PS2, ...) MPQFS_THREAD_LOCAL expands to
- * nothing, giving a plain process-global — which is correct. */
-static MPQFS_THREAD_LOCAL char g_last_error[256] = { 0 };
-
-/* -----------------------------------------------------------------------
- * Error helpers
- * ----------------------------------------------------------------------- */
-
-void mpq_set_error(mpqfs_archive_t *archive, const char *fmt, ...)
-{
-	va_list ap;
-	va_start(ap, fmt);
-
-	if (archive) {
-		vsnprintf(archive->error, sizeof(archive->error), fmt, ap);
-		/* Mirror into thread-local so mpqfs_last_error() works too. */
-		memcpy(g_last_error, archive->error, sizeof(g_last_error));
-	} else {
-		vsnprintf(g_last_error, sizeof(g_last_error), fmt, ap);
-	}
-
-	va_end(ap);
-}
-
-const char *mpqfs_last_error(void)
-{
-	return g_last_error[0] ? g_last_error : NULL;
 }
 
 /* -----------------------------------------------------------------------
@@ -267,14 +231,15 @@ uint32_t mpq_lookup_file(const mpqfs_archive_t *archive, const char *filename)
  * Internal: shared archive init after the FILE* is obtained
  * ----------------------------------------------------------------------- */
 
-static mpqfs_archive_t *MpqInitArchive(FILE *fp, int ownsFd,
-    const char *sourceName)
+static mpqfs_error_code MpqInitArchive(FILE *fp, int ownsFd,
+    mpqfs_archive_t **outArchive)
 {
+	*outArchive = NULL;
+
 	mpqfs_archive_t *archive = (mpqfs_archive_t *)calloc(1, sizeof(*archive));
 	if (!archive) {
 		fclose(fp);
-		mpq_set_error(NULL, "%s: out of memory", sourceName);
-		return NULL;
+		return MPQFS_ERR_OUT_OF_MEMORY;
 	}
 
 	archive->fp = fp;
@@ -282,27 +247,22 @@ static mpqfs_archive_t *MpqInitArchive(FILE *fp, int ownsFd,
 
 	/* Locate the MPQ header. */
 	if (MpqFindHeader(fp, &archive->archive_offset) != 0) {
-		mpq_set_error(archive, "%s: MPQ signature not found", sourceName);
 		fclose(fp);
 		free(archive);
-		return NULL;
+		return MPQFS_ERR_NOT_MPQ;
 	}
 
 	/* Read & validate header. */
 	if (MpqReadHeader(fp, archive->archive_offset, &archive->header) != 0) {
-		mpq_set_error(archive, "%s: failed to read MPQ header", sourceName);
 		fclose(fp);
 		free(archive);
-		return NULL;
+		return MPQFS_ERR_CORRUPT_ARCHIVE;
 	}
 
 	if (archive->header.format_version != 0) {
-		mpq_set_error(archive, "%s: unsupported format version %u "
-		                       "(only v1 / version 0 is supported)",
-		    sourceName, (unsigned)archive->header.format_version);
 		fclose(fp);
 		free(archive);
-		return NULL;
+		return MPQFS_ERR_UNSUPPORTED_VERSION;
 	}
 
 	archive->sector_size = 512U << archive->header.sector_size_shift;
@@ -311,99 +271,98 @@ static mpqfs_archive_t *MpqInitArchive(FILE *fp, int ownsFd,
 	archive->hash_table = MpqLoadHashTable(fp, archive->archive_offset,
 	    &archive->header);
 	if (!archive->hash_table) {
-		mpq_set_error(archive, "%s: failed to load hash table", sourceName);
 		fclose(fp);
 		free(archive);
-		return NULL;
+		return MPQFS_ERR_IO;
 	}
 
 	archive->block_table = MpqLoadBlockTable(fp, archive->archive_offset,
 	    &archive->header);
 	if (!archive->block_table) {
-		mpq_set_error(archive, "%s: failed to load block table", sourceName);
 		free(archive->hash_table);
 		fclose(fp);
 		free(archive);
-		return NULL;
+		return MPQFS_ERR_IO;
 	}
 
-	return archive;
+	*outArchive = archive;
+	return MPQFS_OK;
 }
 
 /* -----------------------------------------------------------------------
  * Public API: open / close
  * ----------------------------------------------------------------------- */
 
-mpqfs_archive_t *mpqfs_open(const char *path)
+mpqfs_error_code mpqfs_open(const char *path, mpqfs_archive_t **outArchive)
 {
+	*outArchive = NULL;
+
 	mpq_crypto_init();
 
 	if (!path) {
-		mpq_set_error(NULL, "mpqfs_open: path is NULL");
-		return NULL;
+		return MPQFS_ERR_INVALID_ARGUMENT;
 	}
 
 	FILE *fp = fopen(path, "rb");
 	if (!fp) {
-		mpq_set_error(NULL, "mpqfs_open: cannot open '%s': %s",
-		    path, strerror(errno));
-		return NULL;
+		return MPQFS_ERR_IO;
 	}
 
 #ifdef MPQFS_FILE_BUFFER_SIZE
 	if (setvbuf(fp, NULL, _IOFBF, MPQFS_FILE_BUFFER_SIZE) != 0) {
-		mpq_set_error(NULL, "mpqfs_open: cannot set buffer size: %s",
-		    strerror(errno));
 		fclose(fp);
-		return NULL;
+		return MPQFS_ERR_IO;
 	}
 #endif
 
-	mpqfs_archive_t *archive = MpqInitArchive(fp, 1, "mpqfs_open");
-	if (archive) {
-		archive->path = MpqfsStrdup(path);
-		if (!archive->path) {
-			mpq_set_error(archive, "mpqfs_open: out of memory for path");
-			mpqfs_close(archive);
-			return NULL;
-		}
+	mpqfs_archive_t *archive;
+	mpqfs_error_code rc = MpqInitArchive(fp, 1, &archive);
+	if (rc != MPQFS_OK)
+		return rc;
+
+	archive->path = MpqfsStrdup(path);
+	if (!archive->path) {
+		mpqfs_close(archive);
+		return MPQFS_ERR_OUT_OF_MEMORY;
 	}
-	return archive;
+
+	*outArchive = archive;
+	return MPQFS_OK;
 }
 
 #if MPQFS_HAS_FDOPEN
 
-mpqfs_archive_t *mpqfs_open_fd(int fd)
+mpqfs_error_code mpqfs_open_fd(int fd, mpqfs_archive_t **outArchive)
 {
+	*outArchive = NULL;
+
 	mpq_crypto_init();
 
 	if (fd < 0) {
-		mpq_set_error(NULL, "mpqfs_open_fd: invalid file descriptor");
-		return NULL;
+		return MPQFS_ERR_INVALID_ARGUMENT;
 	}
 
 	FILE *fp = fdopen(fd, "rb");
 	if (!fp) {
-		mpq_set_error(NULL, "mpqfs_open_fd: fdopen failed: %s",
-		    strerror(errno));
-		return NULL;
+		return MPQFS_ERR_IO;
 	}
 
-	return MpqInitArchive(fp, 1, "mpqfs_open_fd");
+	return MpqInitArchive(fp, 1, outArchive);
 }
 
 #endif /* MPQFS_HAS_FDOPEN */
 
-mpqfs_archive_t *mpqfs_open_fp(FILE *fp)
+mpqfs_error_code mpqfs_open_fp(FILE *fp, mpqfs_archive_t **outArchive)
 {
+	*outArchive = NULL;
+
 	mpq_crypto_init();
 
 	if (!fp) {
-		mpq_set_error(NULL, "mpqfs_open_fp: fp is NULL");
-		return NULL;
+		return MPQFS_ERR_INVALID_ARGUMENT;
 	}
 
-	return MpqInitArchive(fp, 0, "mpqfs_open_fp");
+	return MpqInitArchive(fp, 0, outArchive);
 }
 
 void mpqfs_close(mpqfs_archive_t *archive)
@@ -421,20 +380,19 @@ void mpqfs_close(mpqfs_archive_t *archive)
 	free(archive);
 }
 
-mpqfs_archive_t *mpqfs_clone(const mpqfs_archive_t *archive)
+mpqfs_error_code mpqfs_clone(const mpqfs_archive_t *archive, mpqfs_archive_t **outArchive)
 {
+	*outArchive = NULL;
+
 	if (!archive) {
-		mpq_set_error(NULL, "mpqfs_clone: archive is NULL");
-		return NULL;
+		return MPQFS_ERR_INVALID_ARGUMENT;
 	}
 
 	if (!archive->path) {
-		mpq_set_error(NULL, "mpqfs_clone: cannot clone an archive opened "
-		                    "via mpqfs_open_fp (no path available)");
-		return NULL;
+		return MPQFS_ERR_NO_PATH;
 	}
 
-	return mpqfs_open(archive->path);
+	return mpqfs_open(archive->path, outArchive);
 }
 
 /* -----------------------------------------------------------------------
@@ -473,81 +431,97 @@ bool mpqfs_has_file_hash(mpqfs_archive_t *archive, uint32_t hash)
 	return (archive->block_table[entry->block_index].flags & MPQ_FILE_EXISTS) != 0;
 }
 
-size_t mpqfs_file_size(mpqfs_archive_t *archive, const char *filename)
+mpqfs_error_code mpqfs_file_size(mpqfs_archive_t *archive, const char *filename,
+    size_t *outSize)
 {
-	if (!archive || !filename)
-		return 0;
+	*outSize = 0;
+
+	if (!archive || !filename) {
+		return MPQFS_ERR_INVALID_ARGUMENT;
+	}
 
 	uint32_t bi = mpq_lookup_file(archive, filename);
-	if (bi == UINT32_MAX)
-		return 0;
+	if (bi == UINT32_MAX) {
+		return MPQFS_ERR_FILE_NOT_FOUND;
+	}
 
 	const mpq_block_entry_t *block = &archive->block_table[bi];
-	if (!(block->flags & MPQ_FILE_EXISTS))
-		return 0;
+	if (!(block->flags & MPQ_FILE_EXISTS)) {
+		return MPQFS_ERR_FILE_NOT_FOUND;
+	}
 
-	return (size_t)block->file_size;
+	*outSize = (size_t)block->file_size;
+	return MPQFS_OK;
 }
 
-size_t mpqfs_file_size_from_hash(mpqfs_archive_t *archive, uint32_t hash)
+mpqfs_error_code mpqfs_file_size_from_hash(mpqfs_archive_t *archive, uint32_t hash,
+    size_t *outSize)
 {
-	if (!archive)
-		return 0;
+	*outSize = 0;
 
-	if (hash >= archive->header.hash_table_count)
-		return 0;
+	if (!archive) {
+		return MPQFS_ERR_INVALID_ARGUMENT;
+	}
+
+	if (hash >= archive->header.hash_table_count) {
+		return MPQFS_ERR_INVALID_HASH;
+	}
 
 	const mpq_hash_entry_t *entry = &archive->hash_table[hash];
-	if (entry->block_index >= archive->header.block_table_count)
-		return 0;
+	if (entry->block_index >= archive->header.block_table_count) {
+		return MPQFS_ERR_CORRUPT_ARCHIVE;
+	}
 
 	const mpq_block_entry_t *block = &archive->block_table[entry->block_index];
-	if (!(block->flags & MPQ_FILE_EXISTS))
-		return 0;
+	if (!(block->flags & MPQ_FILE_EXISTS)) {
+		return MPQFS_ERR_FILE_NOT_FOUND;
+	}
 
-	return (size_t)block->file_size;
+	*outSize = (size_t)block->file_size;
+	return MPQFS_OK;
 }
 
 /* -----------------------------------------------------------------------
  * Public API: whole-file read
  * ----------------------------------------------------------------------- */
 
-void *mpqfs_read_file(mpqfs_archive_t *archive, const char *filename,
-    size_t *outSize)
+mpqfs_error_code mpqfs_read_file(mpqfs_archive_t *archive, const char *filename,
+    void **outData, size_t *outSize)
 {
-	if (outSize)
-		*outSize = 0;
+	*outData = NULL;
+	*outSize = 0;
 
 	if (!archive || !filename) {
-		mpq_set_error(archive, "mpqfs_read_file: invalid arguments");
-		return NULL;
+		return MPQFS_ERR_INVALID_ARGUMENT;
 	}
 
 	uint32_t bi = mpq_lookup_file(archive, filename);
 	if (bi == UINT32_MAX) {
-		mpq_set_error(archive, "mpqfs_read_file: file '%s' not found", filename);
-		return NULL;
+		return MPQFS_ERR_FILE_NOT_FOUND;
 	}
 
-	mpqfs_stream_t *stream = mpq_stream_open_named(archive, bi, filename);
-	if (!stream)
-		return NULL; /* error already set */
+	mpqfs_stream_t *stream;
+	mpqfs_error_code rc = mpq_stream_open_named(archive, bi, filename, &stream);
+	if (rc != MPQFS_OK)
+		return rc;
 
-	size_t total = mpq_stream_size(stream);
+	size_t total;
+	mpq_stream_size(stream, &total);
+
 	uint8_t *buf = (uint8_t *)malloc(total);
 	if (!buf) {
-		mpq_set_error(archive, "mpqfs_read_file: out of memory (%zu bytes)", total);
 		mpq_stream_close(stream);
-		return NULL;
+		return MPQFS_ERR_OUT_OF_MEMORY;
 	}
 
 	size_t offset = 0;
 	while (offset < total) {
-		size_t n = mpq_stream_read(stream, buf + offset, total - offset);
-		if (n == (size_t)-1) {
+		size_t n;
+		rc = mpq_stream_read(stream, buf + offset, total - offset, &n);
+		if (rc != MPQFS_OK) {
 			free(buf);
 			mpq_stream_close(stream);
-			return NULL;
+			return rc;
 		}
 		if (n == 0)
 			break; /* shouldn't happen, but guard against infinite loops */
@@ -556,51 +530,49 @@ void *mpqfs_read_file(mpqfs_archive_t *archive, const char *filename,
 
 	mpq_stream_close(stream);
 
-	if (outSize)
-		*outSize = offset;
-
-	return buf;
+	*outData = buf;
+	*outSize = offset;
+	return MPQFS_OK;
 }
 
 /* -----------------------------------------------------------------------
  * Public API: whole-file read into caller-supplied buffer
  * ----------------------------------------------------------------------- */
 
-size_t mpqfs_read_file_into(mpqfs_archive_t *archive, const char *filename,
-    void *buffer, size_t bufferSize)
+mpqfs_error_code mpqfs_read_file_into(mpqfs_archive_t *archive, const char *filename,
+    void *buffer, size_t bufferSize, size_t *outBytesRead)
 {
+	*outBytesRead = 0;
+
 	if (!archive || !filename || !buffer || bufferSize == 0) {
-		mpq_set_error(archive, "mpqfs_read_file_into: invalid arguments");
-		return 0;
+		return MPQFS_ERR_INVALID_ARGUMENT;
 	}
 
 	uint32_t bi = mpq_lookup_file(archive, filename);
 	if (bi == UINT32_MAX) {
-		mpq_set_error(archive, "mpqfs_read_file_into: file '%s' not found",
-		    filename);
-		return 0;
+		return MPQFS_ERR_FILE_NOT_FOUND;
 	}
 
-	mpqfs_stream_t *stream = mpq_stream_open_named(archive, bi, filename);
-	if (!stream)
-		return 0; /* error already set */
+	mpqfs_stream_t *stream;
+	mpqfs_error_code rc = mpq_stream_open_named(archive, bi, filename, &stream);
+	if (rc != MPQFS_OK)
+		return rc;
 
-	size_t total = mpq_stream_size(stream);
+	size_t total;
+	mpq_stream_size(stream, &total);
 	if (total > bufferSize) {
-		mpq_set_error(archive, "mpqfs_read_file_into: buffer too small "
-		                       "(%zu bytes available, %zu needed)",
-		    bufferSize, total);
 		mpq_stream_close(stream);
-		return 0;
+		return MPQFS_ERR_BUFFER_TOO_SMALL;
 	}
 
 	uint8_t *dst = (uint8_t *)buffer;
 	size_t offset = 0;
 	while (offset < total) {
-		size_t n = mpq_stream_read(stream, dst + offset, total - offset);
-		if (n == (size_t)-1) {
+		size_t n;
+		rc = mpq_stream_read(stream, dst + offset, total - offset, &n);
+		if (rc != MPQFS_OK) {
 			mpq_stream_close(stream);
-			return 0;
+			return rc;
 		}
 		if (n == 0)
 			break;
@@ -608,5 +580,6 @@ size_t mpqfs_read_file_into(mpqfs_archive_t *archive, const char *filename,
 	}
 
 	mpq_stream_close(stream);
-	return offset;
+	*outBytesRead = offset;
+	return MPQFS_OK;
 }

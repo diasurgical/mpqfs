@@ -407,13 +407,11 @@ static void TestOpenNonexistent(void)
 {
 	TEST_BEGIN("open_nonexistent");
 
-	mpqfs_archive_t *archive = mpqfs_open("/tmp/this_file_does_not_exist_mpqfs_test.mpq");
+	mpqfs_archive_t *archive;
+	mpqfs_error_code rc = mpqfs_open("/tmp/this_file_does_not_exist_mpqfs_test.mpq", &archive);
 	ASSERT_NULL(archive);
-
-	const char *err = mpqfs_last_error();
-	ASSERT_NOT_NULL(err);
-	/* Error should mention the filename or "cannot open". */
-	ASSERT_TRUE(strstr(err, "cannot open") != NULL || strstr(err, "not_exist") != NULL);
+	ASSERT_TRUE(rc == MPQFS_ERR_IO);
+	ASSERT_NOT_NULL(mpqfs_error_message(rc));
 
 	TEST_END();
 }
@@ -426,8 +424,10 @@ static void TestOpenNull(void)
 {
 	TEST_BEGIN("open_null");
 
-	mpqfs_archive_t *archive = mpqfs_open(NULL);
+	mpqfs_archive_t *archive;
+	mpqfs_error_code rc = mpqfs_open(NULL, &archive);
 	ASSERT_NULL(archive);
+	ASSERT_TRUE(rc == MPQFS_ERR_INVALID_ARGUMENT);
 
 	TEST_END();
 }
@@ -552,10 +552,12 @@ static void TestSyntheticMpq(void)
 	ASSERT_EQ_SZ(written, (size_t)archiveSize);
 
 	/* --- Open and verify --- */
-	mpqfs_archive_t *archive = mpqfs_open(tmpPath);
-	if (!archive) {
-		printf("    (mpqfs_open failed: %s)\n", mpqfs_last_error());
+	mpqfs_archive_t *archive;
+	mpqfs_error_code rc = mpqfs_open(tmpPath, &archive);
+	if (rc != MPQFS_OK) {
+		printf("    (mpqfs_open failed: %s)\n", mpqfs_error_message(rc));
 	}
+	ASSERT_TRUE(rc == MPQFS_OK);
 	ASSERT_NOT_NULL(archive);
 
 	/* File should exist. */
@@ -565,14 +567,18 @@ static void TestSyntheticMpq(void)
 	ASSERT_TRUE(!mpqfs_has_file(archive, "nonexistent\\file.txt"));
 
 	/* Check file size. */
-	ASSERT_EQ_SZ(mpqfs_file_size(archive, testFilename), (size_t)fileDataLen);
+	size_t fsize = 0;
+	ASSERT_TRUE(mpqfs_file_size(archive, testFilename, &fsize) == MPQFS_OK);
+	ASSERT_EQ_SZ(fsize, (size_t)fileDataLen);
 
 	/* Read the file. */
 	size_t readSize = 0;
-	void *data = mpqfs_read_file(archive, testFilename, &readSize);
-	if (!data) {
-		printf("    (mpqfs_read_file failed: %s)\n", mpqfs_last_error());
+	void *data = NULL;
+	rc = mpqfs_read_file(archive, testFilename, &data, &readSize);
+	if (rc != MPQFS_OK) {
+		printf("    (mpqfs_read_file failed: %s)\n", mpqfs_error_message(rc));
 	}
+	ASSERT_TRUE(rc == MPQFS_OK);
 	ASSERT_NOT_NULL(data);
 	ASSERT_EQ_SZ(readSize, (size_t)fileDataLen);
 	ASSERT_TRUE(memcmp(data, fileData, fileDataLen) == 0);
@@ -580,13 +586,15 @@ static void TestSyntheticMpq(void)
 
 	/* Read into a caller-supplied buffer. */
 	char buf[64] = { 0 };
-	size_t n = mpqfs_read_file_into(archive, testFilename, buf, sizeof(buf));
+	size_t n = 0;
+	ASSERT_TRUE(mpqfs_read_file_into(archive, testFilename, buf, sizeof(buf), &n) == MPQFS_OK);
 	ASSERT_EQ_SZ(n, (size_t)fileDataLen);
 	ASSERT_TRUE(memcmp(buf, fileData, fileDataLen) == 0);
 
 	/* Buffer too small should fail. */
 	char tiny[2];
-	size_t n2 = mpqfs_read_file_into(archive, testFilename, tiny, sizeof(tiny));
+	size_t n2 = 0;
+	ASSERT_TRUE(mpqfs_read_file_into(archive, testFilename, tiny, sizeof(tiny), &n2) == MPQFS_ERR_BUFFER_TOO_SMALL);
 	ASSERT_EQ_SZ(n2, 0);
 
 	mpqfs_close(archive);
@@ -675,61 +683,70 @@ static void TestStreamSeek(void)
 	fclose(fp);
 	free(mpqBuf);
 
-	mpqfs_archive_t *archive = mpqfs_open(tmpPath);
+	mpqfs_archive_t *archive;
+	ASSERT_TRUE(mpqfs_open(tmpPath, &archive) == MPQFS_OK);
 	ASSERT_NOT_NULL(archive);
 
 	/* Open a stream to the file. */
 	uint32_t bi = mpq_lookup_file(archive, testFilename);
 	ASSERT_TRUE(bi != UINT32_MAX);
 
-	mpqfs_stream_t *stream = mpq_stream_open(archive, bi);
+	mpqfs_stream_t *stream;
+	ASSERT_TRUE(mpq_stream_open(archive, bi, &stream) == MPQFS_OK);
 	ASSERT_NOT_NULL(stream);
 
 	/* Size should be correct. */
-	ASSERT_EQ_SZ(mpq_stream_size(stream), 256);
+	size_t streamSize = 0;
+	ASSERT_TRUE(mpq_stream_size(stream, &streamSize) == MPQFS_OK);
+	ASSERT_EQ_SZ(streamSize, 256);
 
 	/* Tell should start at 0. */
-	ASSERT_TRUE(mpq_stream_tell(stream) == 0);
+	int64_t tellPos = -1;
+	ASSERT_TRUE(mpq_stream_tell(stream, &tellPos) == MPQFS_OK);
+	ASSERT_TRUE(tellPos == 0);
 
 	/* Read first 4 bytes. */
 	uint8_t buf[4];
-	size_t n = mpq_stream_read(stream, buf, 4);
+	size_t n = 0;
+	ASSERT_TRUE(mpq_stream_read(stream, buf, 4, &n) == MPQFS_OK);
 	ASSERT_EQ_SZ(n, 4);
 	ASSERT_TRUE(buf[0] == 0 && buf[1] == 1 && buf[2] == 2 && buf[3] == 3);
-	ASSERT_TRUE(mpq_stream_tell(stream) == 4);
+	ASSERT_TRUE(mpq_stream_tell(stream, &tellPos) == MPQFS_OK);
+	ASSERT_TRUE(tellPos == 4);
 
 	/* Seek to offset 100 (SEEK_SET). */
-	int64_t pos = mpq_stream_seek(stream, 100, SEEK_SET);
+	int64_t pos = -1;
+	ASSERT_TRUE(mpq_stream_seek(stream, 100, SEEK_SET, &pos) == MPQFS_OK);
 	ASSERT_TRUE(pos == 100);
-	n = mpq_stream_read(stream, buf, 1);
+	ASSERT_TRUE(mpq_stream_read(stream, buf, 1, &n) == MPQFS_OK);
 	ASSERT_EQ_SZ(n, 1);
 	ASSERT_TRUE(buf[0] == 100);
 
 	/* Seek relative (SEEK_CUR). */
-	pos = mpq_stream_seek(stream, 49, SEEK_CUR);
+	ASSERT_TRUE(mpq_stream_seek(stream, 49, SEEK_CUR, &pos) == MPQFS_OK);
 	ASSERT_TRUE(pos == 150);
-	n = mpq_stream_read(stream, buf, 1);
+	ASSERT_TRUE(mpq_stream_read(stream, buf, 1, &n) == MPQFS_OK);
 	ASSERT_EQ_SZ(n, 1);
 	ASSERT_TRUE(buf[0] == 150);
 
 	/* Seek from end (SEEK_END). */
-	pos = mpq_stream_seek(stream, -1, SEEK_END);
+	ASSERT_TRUE(mpq_stream_seek(stream, -1, SEEK_END, &pos) == MPQFS_OK);
 	ASSERT_TRUE(pos == 255);
-	n = mpq_stream_read(stream, buf, 1);
+	ASSERT_TRUE(mpq_stream_read(stream, buf, 1, &n) == MPQFS_OK);
 	ASSERT_EQ_SZ(n, 1);
 	ASSERT_TRUE(buf[0] == 255);
 
 	/* Reading past end should return 0 bytes. */
-	n = mpq_stream_read(stream, buf, 1);
+	ASSERT_TRUE(mpq_stream_read(stream, buf, 1, &n) == MPQFS_OK);
 	ASSERT_EQ_SZ(n, 0);
 
 	/* Seek back to start. */
-	pos = mpq_stream_seek(stream, 0, SEEK_SET);
+	ASSERT_TRUE(mpq_stream_seek(stream, 0, SEEK_SET, &pos) == MPQFS_OK);
 	ASSERT_TRUE(pos == 0);
 
 	/* Read the whole thing. */
 	uint8_t full[256];
-	n = mpq_stream_read(stream, full, 256);
+	ASSERT_TRUE(mpq_stream_read(stream, full, 256, &n) == MPQFS_OK);
 	ASSERT_EQ_SZ(n, 256);
 	ASSERT_TRUE(memcmp(full, fileData, 256) == 0);
 
@@ -763,8 +780,15 @@ static void TestNullArchiveQueries(void)
 	TEST_BEGIN("null_archive_queries");
 
 	ASSERT_TRUE(mpqfs_has_file(NULL, "test") == false);
-	ASSERT_EQ_SZ(mpqfs_file_size(NULL, "test"), 0);
-	ASSERT_NULL(mpqfs_read_file(NULL, "test", NULL));
+
+	size_t sz = 12345;
+	ASSERT_TRUE(mpqfs_file_size(NULL, "test", &sz) == MPQFS_ERR_INVALID_ARGUMENT);
+	ASSERT_EQ_SZ(sz, 0);
+
+	void *data = NULL;
+	size_t rsz = 0;
+	ASSERT_TRUE(mpqfs_read_file(NULL, "test", &data, &rsz) == MPQFS_ERR_INVALID_ARGUMENT);
+	ASSERT_NULL(data);
 
 	TEST_END();
 }
@@ -787,27 +811,31 @@ static void TestWriterRoundtrip(void)
 	size_t fileDataLen = 16;
 
 	/* Create archive with one file. */
-	mpqfs_writer_t *writer = mpqfs_writer_create(tmpPath, 16);
+	mpqfs_writer_t *writer;
+	ASSERT_TRUE(mpqfs_writer_create(tmpPath, 16, &writer) == MPQFS_OK);
 	ASSERT_NOT_NULL(writer);
 
-	bool ok = mpqfs_writer_add_file(writer, filename, fileData, fileDataLen);
-	ASSERT_TRUE(ok);
+	ASSERT_TRUE(mpqfs_writer_add_file(writer, filename, fileData, fileDataLen) == MPQFS_OK);
 
-	ok = mpqfs_writer_close(writer);
-	ASSERT_TRUE(ok);
+	ASSERT_TRUE(mpqfs_writer_close(writer) == MPQFS_OK);
 
 	/* Read it back. */
-	mpqfs_archive_t *archive = mpqfs_open(tmpPath);
-	if (!archive) {
-		printf("    (mpqfs_open failed: %s)\n", mpqfs_last_error());
+	mpqfs_archive_t *archive;
+	mpqfs_error_code rc = mpqfs_open(tmpPath, &archive);
+	if (rc != MPQFS_OK) {
+		printf("    (mpqfs_open failed: %s)\n", mpqfs_error_message(rc));
 	}
+	ASSERT_TRUE(rc == MPQFS_OK);
 	ASSERT_NOT_NULL(archive);
 
 	ASSERT_TRUE(mpqfs_has_file(archive, filename));
-	ASSERT_EQ_SZ(mpqfs_file_size(archive, filename), fileDataLen);
+	size_t fsize = 0;
+	ASSERT_TRUE(mpqfs_file_size(archive, filename, &fsize) == MPQFS_OK);
+	ASSERT_EQ_SZ(fsize, fileDataLen);
 
 	size_t readSize = 0;
-	void *data = mpqfs_read_file(archive, filename, &readSize);
+	void *data = NULL;
+	ASSERT_TRUE(mpqfs_read_file(archive, filename, &data, &readSize) == MPQFS_OK);
 	ASSERT_NOT_NULL(data);
 	ASSERT_EQ_SZ(readSize, fileDataLen);
 	ASSERT_TRUE(memcmp(data, fileData, fileDataLen) == 0);
@@ -838,30 +866,34 @@ static void TestWriterMultipleFiles(void)
 	int nfiles = 3;
 
 	/* Create archive with three files. */
-	mpqfs_writer_t *writer = mpqfs_writer_create(tmpPath, 16);
+	mpqfs_writer_t *writer;
+	ASSERT_TRUE(mpqfs_writer_create(tmpPath, 16, &writer) == MPQFS_OK);
 	ASSERT_NOT_NULL(writer);
 
 	for (int i = 0; i < nfiles; i++) {
-		bool ok = mpqfs_writer_add_file(writer, names[i], datas[i], sizes[i]);
-		ASSERT_TRUE(ok);
+		ASSERT_TRUE(mpqfs_writer_add_file(writer, names[i], datas[i], sizes[i]) == MPQFS_OK);
 	}
 
-	bool ok = mpqfs_writer_close(writer);
-	ASSERT_TRUE(ok);
+	ASSERT_TRUE(mpqfs_writer_close(writer) == MPQFS_OK);
 
 	/* Read them all back. */
-	mpqfs_archive_t *archive = mpqfs_open(tmpPath);
-	if (!archive) {
-		printf("    (mpqfs_open failed: %s)\n", mpqfs_last_error());
+	mpqfs_archive_t *archive;
+	mpqfs_error_code rc = mpqfs_open(tmpPath, &archive);
+	if (rc != MPQFS_OK) {
+		printf("    (mpqfs_open failed: %s)\n", mpqfs_error_message(rc));
 	}
+	ASSERT_TRUE(rc == MPQFS_OK);
 	ASSERT_NOT_NULL(archive);
 
 	for (int i = 0; i < nfiles; i++) {
 		ASSERT_TRUE(mpqfs_has_file(archive, names[i]));
-		ASSERT_EQ_SZ(mpqfs_file_size(archive, names[i]), sizes[i]);
+		size_t fsize = 0;
+		ASSERT_TRUE(mpqfs_file_size(archive, names[i], &fsize) == MPQFS_OK);
+		ASSERT_EQ_SZ(fsize, sizes[i]);
 
 		size_t readSize = 0;
-		void *data = mpqfs_read_file(archive, names[i], &readSize);
+		void *data = NULL;
+		ASSERT_TRUE(mpqfs_read_file(archive, names[i], &data, &readSize) == MPQFS_OK);
 		ASSERT_NOT_NULL(data);
 		ASSERT_EQ_SZ(readSize, sizes[i]);
 		ASSERT_TRUE(memcmp(data, datas[i], sizes[i]) == 0);
@@ -893,22 +925,26 @@ static void TestWriterEmptyArchive(void)
 	const char *tmpPath = "/tmp/mpqfs_test_writer_empty.mpq";
 
 	/* Create archive with zero files. */
-	mpqfs_writer_t *writer = mpqfs_writer_create(tmpPath, 4);
+	mpqfs_writer_t *writer;
+	ASSERT_TRUE(mpqfs_writer_create(tmpPath, 4, &writer) == MPQFS_OK);
 	ASSERT_NOT_NULL(writer);
 
-	bool ok = mpqfs_writer_close(writer);
-	ASSERT_TRUE(ok);
+	ASSERT_TRUE(mpqfs_writer_close(writer) == MPQFS_OK);
 
 	/* Should open successfully. */
-	mpqfs_archive_t *archive = mpqfs_open(tmpPath);
-	if (!archive) {
-		printf("    (mpqfs_open failed: %s)\n", mpqfs_last_error());
+	mpqfs_archive_t *archive;
+	mpqfs_error_code rc = mpqfs_open(tmpPath, &archive);
+	if (rc != MPQFS_OK) {
+		printf("    (mpqfs_open failed: %s)\n", mpqfs_error_message(rc));
 	}
+	ASSERT_TRUE(rc == MPQFS_OK);
 	ASSERT_NOT_NULL(archive);
 
 	/* No files should be found. */
 	ASSERT_TRUE(!mpqfs_has_file(archive, "anything"));
-	ASSERT_EQ_SZ(mpqfs_file_size(archive, "anything"), 0);
+	size_t fsize = 12345;
+	ASSERT_TRUE(mpqfs_file_size(archive, "anything", &fsize) == MPQFS_ERR_FILE_NOT_FOUND);
+	ASSERT_EQ_SZ(fsize, 0);
 
 	mpqfs_close(archive);
 	remove(tmpPath);
@@ -926,33 +962,37 @@ static void TestWriterEmptyFile(void)
 
 	const char *tmpPath = "/tmp/mpqfs_test_writer_emptyfile.mpq";
 
-	mpqfs_writer_t *writer = mpqfs_writer_create(tmpPath, 4);
+	mpqfs_writer_t *writer;
+	ASSERT_TRUE(mpqfs_writer_create(tmpPath, 4, &writer) == MPQFS_OK);
 	ASSERT_NOT_NULL(writer);
 
 	/* Add a zero-length file. */
-	bool ok = mpqfs_writer_add_file(writer, "empty", NULL, 0);
-	ASSERT_TRUE(ok);
+	ASSERT_TRUE(mpqfs_writer_add_file(writer, "empty", NULL, 0) == MPQFS_OK);
 
 	/* Also add a normal file alongside it. */
-	ok = mpqfs_writer_add_file(writer, "notempty", "data", 4);
-	ASSERT_TRUE(ok);
+	ASSERT_TRUE(mpqfs_writer_add_file(writer, "notempty", "data", 4) == MPQFS_OK);
 
-	ok = mpqfs_writer_close(writer);
-	ASSERT_TRUE(ok);
+	ASSERT_TRUE(mpqfs_writer_close(writer) == MPQFS_OK);
 
-	mpqfs_archive_t *archive = mpqfs_open(tmpPath);
+	mpqfs_archive_t *archive;
+	ASSERT_TRUE(mpqfs_open(tmpPath, &archive) == MPQFS_OK);
 	ASSERT_NOT_NULL(archive);
 
 	/* Zero-length file should exist with size 0. */
 	ASSERT_TRUE(mpqfs_has_file(archive, "empty"));
-	ASSERT_EQ_SZ(mpqfs_file_size(archive, "empty"), 0);
+	size_t emptySize = 12345;
+	ASSERT_TRUE(mpqfs_file_size(archive, "empty", &emptySize) == MPQFS_OK);
+	ASSERT_EQ_SZ(emptySize, 0);
 
 	/* Normal file should be readable. */
 	ASSERT_TRUE(mpqfs_has_file(archive, "notempty"));
-	ASSERT_EQ_SZ(mpqfs_file_size(archive, "notempty"), 4);
+	size_t notEmptySize = 0;
+	ASSERT_TRUE(mpqfs_file_size(archive, "notempty", &notEmptySize) == MPQFS_OK);
+	ASSERT_EQ_SZ(notEmptySize, 4);
 
 	size_t readSize = 0;
-	void *data = mpqfs_read_file(archive, "notempty", &readSize);
+	void *data = NULL;
+	ASSERT_TRUE(mpqfs_read_file(archive, "notempty", &data, &readSize) == MPQFS_OK);
 	ASSERT_NOT_NULL(data);
 	ASSERT_EQ_SZ(readSize, 4);
 	ASSERT_TRUE(memcmp(data, "data", 4) == 0);
@@ -974,11 +1014,11 @@ static void TestWriterDiscard(void)
 
 	const char *tmpPath = "/tmp/mpqfs_test_writer_discard.mpq";
 
-	mpqfs_writer_t *writer = mpqfs_writer_create(tmpPath, 8);
+	mpqfs_writer_t *writer;
+	ASSERT_TRUE(mpqfs_writer_create(tmpPath, 8, &writer) == MPQFS_OK);
 	ASSERT_NOT_NULL(writer);
 
-	bool ok = mpqfs_writer_add_file(writer, "hero", "test", 4);
-	ASSERT_TRUE(ok);
+	ASSERT_TRUE(mpqfs_writer_add_file(writer, "hero", "test", 4) == MPQFS_OK);
 
 	/* Discard — should not crash, frees all resources. */
 	mpqfs_writer_discard(writer);
@@ -1001,20 +1041,19 @@ static void TestWriterNullSafety(void)
 	TEST_BEGIN("writer_null_safety");
 
 	/* Create with NULL path should fail. */
-	mpqfs_writer_t *w = mpqfs_writer_create(NULL, 16);
+	mpqfs_writer_t *w;
+	ASSERT_TRUE(mpqfs_writer_create(NULL, 16, &w) == MPQFS_ERR_INVALID_ARGUMENT);
 	ASSERT_NULL(w);
 
 	/* Create with NULL fp should fail. */
-	w = mpqfs_writer_create_fp(NULL, 16);
+	ASSERT_TRUE(mpqfs_writer_create_fp(NULL, 16, &w) == MPQFS_ERR_INVALID_ARGUMENT);
 	ASSERT_NULL(w);
 
 	/* Add file with NULL writer should fail. */
-	bool ok = mpqfs_writer_add_file(NULL, "test", "data", 4);
-	ASSERT_TRUE(!ok);
+	ASSERT_TRUE(mpqfs_writer_add_file(NULL, "test", "data", 4) == MPQFS_ERR_INVALID_ARGUMENT);
 
-	/* Close with NULL writer should fail (returns false). */
-	ok = mpqfs_writer_close(NULL);
-	ASSERT_TRUE(!ok);
+	/* Close with NULL writer should fail. */
+	ASSERT_TRUE(mpqfs_writer_close(NULL) == MPQFS_ERR_INVALID_ARGUMENT);
 
 	TEST_END();
 }
@@ -1032,27 +1071,29 @@ static void TestWriterReadInto(void)
 	const char *fileData = "SaveGamePayload_12345678";
 	size_t fileDataLen = 24;
 
-	mpqfs_writer_t *writer = mpqfs_writer_create(tmpPath, 8);
+	mpqfs_writer_t *writer;
+	ASSERT_TRUE(mpqfs_writer_create(tmpPath, 8, &writer) == MPQFS_OK);
 	ASSERT_NOT_NULL(writer);
 
-	bool ok = mpqfs_writer_add_file(writer, filename, fileData, fileDataLen);
-	ASSERT_TRUE(ok);
+	ASSERT_TRUE(mpqfs_writer_add_file(writer, filename, fileData, fileDataLen) == MPQFS_OK);
 
-	ok = mpqfs_writer_close(writer);
-	ASSERT_TRUE(ok);
+	ASSERT_TRUE(mpqfs_writer_close(writer) == MPQFS_OK);
 
-	mpqfs_archive_t *archive = mpqfs_open(tmpPath);
+	mpqfs_archive_t *archive;
+	ASSERT_TRUE(mpqfs_open(tmpPath, &archive) == MPQFS_OK);
 	ASSERT_NOT_NULL(archive);
 
 	/* Read into caller-supplied buffer. */
 	char buf[64] = { 0 };
-	size_t n = mpqfs_read_file_into(archive, filename, buf, sizeof(buf));
+	size_t n = 0;
+	ASSERT_TRUE(mpqfs_read_file_into(archive, filename, buf, sizeof(buf), &n) == MPQFS_OK);
 	ASSERT_EQ_SZ(n, fileDataLen);
 	ASSERT_TRUE(memcmp(buf, fileData, fileDataLen) == 0);
 
 	/* Buffer too small should fail. */
 	char tiny[4];
-	size_t n2 = mpqfs_read_file_into(archive, filename, tiny, sizeof(tiny));
+	size_t n2 = 0;
+	ASSERT_TRUE(mpqfs_read_file_into(archive, filename, tiny, sizeof(tiny), &n2) == MPQFS_ERR_BUFFER_TOO_SMALL);
 	ASSERT_EQ_SZ(n2, 0);
 
 	mpqfs_close(archive);
@@ -1078,27 +1119,30 @@ static void TestWriterFp(void)
 	FILE *fp = fopen(tmpPath, "wb");
 	ASSERT_NOT_NULL(fp);
 
-	mpqfs_writer_t *writer = mpqfs_writer_create_fp(fp, 8);
+	mpqfs_writer_t *writer;
+	ASSERT_TRUE(mpqfs_writer_create_fp(fp, 8, &writer) == MPQFS_OK);
 	ASSERT_NOT_NULL(writer);
 
-	bool ok = mpqfs_writer_add_file(writer, filename, fileData, fileDataLen);
-	ASSERT_TRUE(ok);
+	ASSERT_TRUE(mpqfs_writer_add_file(writer, filename, fileData, fileDataLen) == MPQFS_OK);
 
-	ok = mpqfs_writer_close(writer);
-	ASSERT_TRUE(ok);
+	ASSERT_TRUE(mpqfs_writer_close(writer) == MPQFS_OK);
 
 	/* We still own the FILE* — close it ourselves. */
 	fclose(fp);
 
 	/* Verify by reading back. */
-	mpqfs_archive_t *archive = mpqfs_open(tmpPath);
+	mpqfs_archive_t *archive;
+	ASSERT_TRUE(mpqfs_open(tmpPath, &archive) == MPQFS_OK);
 	ASSERT_NOT_NULL(archive);
 
 	ASSERT_TRUE(mpqfs_has_file(archive, filename));
-	ASSERT_EQ_SZ(mpqfs_file_size(archive, filename), fileDataLen);
+	size_t fsize = 0;
+	ASSERT_TRUE(mpqfs_file_size(archive, filename, &fsize) == MPQFS_OK);
+	ASSERT_EQ_SZ(fsize, fileDataLen);
 
 	size_t readSize = 0;
-	void *data = mpqfs_read_file(archive, filename, &readSize);
+	void *data = NULL;
+	ASSERT_TRUE(mpqfs_read_file(archive, filename, &data, &readSize) == MPQFS_OK);
 	ASSERT_NOT_NULL(data);
 	ASSERT_EQ_SZ(readSize, fileDataLen);
 	ASSERT_TRUE(memcmp(data, fileData, fileDataLen) == 0);
@@ -1121,7 +1165,8 @@ static void TestWriterHashTableSizing(void)
 	const char *tmpPath = "/tmp/mpqfs_test_writer_htsize.mpq";
 
 	/* Request hash table size of 5 — should be rounded up to 8. */
-	mpqfs_writer_t *writer = mpqfs_writer_create(tmpPath, 5);
+	mpqfs_writer_t *writer;
+	ASSERT_TRUE(mpqfs_writer_create(tmpPath, 5, &writer) == MPQFS_OK);
 	ASSERT_NOT_NULL(writer);
 
 	/* Add 6 files (which fits in a table of 8, since we need
@@ -1129,23 +1174,25 @@ static void TestWriterHashTableSizing(void)
 	const char *names[] = { "a", "b", "c", "d", "e", "f" };
 	for (int i = 0; i < 6; i++) {
 		char data[1] = { (char)('A' + i) };
-		bool ok = mpqfs_writer_add_file(writer, names[i], data, 1);
-		ASSERT_TRUE(ok);
+		ASSERT_TRUE(mpqfs_writer_add_file(writer, names[i], data, 1) == MPQFS_OK);
 	}
 
-	bool ok = mpqfs_writer_close(writer);
-	ASSERT_TRUE(ok);
+	ASSERT_TRUE(mpqfs_writer_close(writer) == MPQFS_OK);
 
 	/* Read them back — all 6 should be present. */
-	mpqfs_archive_t *archive = mpqfs_open(tmpPath);
+	mpqfs_archive_t *archive;
+	ASSERT_TRUE(mpqfs_open(tmpPath, &archive) == MPQFS_OK);
 	ASSERT_NOT_NULL(archive);
 
 	for (int i = 0; i < 6; i++) {
 		ASSERT_TRUE(mpqfs_has_file(archive, names[i]));
-		ASSERT_EQ_SZ(mpqfs_file_size(archive, names[i]), 1);
+		size_t fsize = 0;
+		ASSERT_TRUE(mpqfs_file_size(archive, names[i], &fsize) == MPQFS_OK);
+		ASSERT_EQ_SZ(fsize, 1);
 
 		size_t sz = 0;
-		void *data = mpqfs_read_file(archive, names[i], &sz);
+		void *data = NULL;
+		ASSERT_TRUE(mpqfs_read_file(archive, names[i], &data, &sz) == MPQFS_OK);
 		ASSERT_NOT_NULL(data);
 		ASSERT_EQ_SZ(sz, 1);
 		ASSERT_TRUE(((char *)data)[0] == (char)('A' + i));
@@ -1192,30 +1239,34 @@ static void TestWriterCompression(void)
 	}
 
 	/* Write archive with both files. */
-	mpqfs_writer_t *writer = mpqfs_writer_create(tmpPath, 2048);
+	mpqfs_writer_t *writer;
+	ASSERT_TRUE(mpqfs_writer_create(tmpPath, 2048, &writer) == MPQFS_OK);
 	ASSERT_NOT_NULL(writer);
 
-	bool ok = mpqfs_writer_add_file(writer, "compressible",
-	    compressible, sizeof(compressible));
-	ASSERT_TRUE(ok);
+	ASSERT_TRUE(mpqfs_writer_add_file(writer, "compressible",
+	                compressible, sizeof(compressible))
+	    == MPQFS_OK);
 
-	ok = mpqfs_writer_add_file(writer, "incompressible",
-	    incompressible, sizeof(incompressible));
-	ASSERT_TRUE(ok);
+	ASSERT_TRUE(mpqfs_writer_add_file(writer, "incompressible",
+	                incompressible, sizeof(incompressible))
+	    == MPQFS_OK);
 
-	ok = mpqfs_writer_close(writer);
-	ASSERT_TRUE(ok);
+	ASSERT_TRUE(mpqfs_writer_close(writer) == MPQFS_OK);
 
 	/* Read back and verify. */
-	mpqfs_archive_t *archive = mpqfs_open(tmpPath);
-	if (!archive) {
-		printf("    (mpqfs_open failed: %s)\n", mpqfs_last_error());
+	mpqfs_archive_t *archive;
+	mpqfs_error_code rc = mpqfs_open(tmpPath, &archive);
+	if (rc != MPQFS_OK) {
+		printf("    (mpqfs_open failed: %s)\n", mpqfs_error_message(rc));
 	}
+	ASSERT_TRUE(rc == MPQFS_OK);
 	ASSERT_NOT_NULL(archive);
 
 	/* Compressible file: should have IMPLODE flag and smaller compressed size. */
 	ASSERT_TRUE(mpqfs_has_file(archive, "compressible"));
-	ASSERT_EQ_SZ(mpqfs_file_size(archive, "compressible"), sizeof(compressible));
+	size_t compressibleSize = 0;
+	ASSERT_TRUE(mpqfs_file_size(archive, "compressible", &compressibleSize) == MPQFS_OK);
+	ASSERT_EQ_SZ(compressibleSize, sizeof(compressible));
 
 	{
 		uint32_t bi = mpq_lookup_file(archive, "compressible");
@@ -1226,7 +1277,8 @@ static void TestWriterCompression(void)
 	}
 
 	size_t readSize = 0;
-	void *data = mpqfs_read_file(archive, "compressible", &readSize);
+	void *data = NULL;
+	ASSERT_TRUE(mpqfs_read_file(archive, "compressible", &data, &readSize) == MPQFS_OK);
 	ASSERT_NOT_NULL(data);
 	ASSERT_EQ_SZ(readSize, sizeof(compressible));
 	ASSERT_TRUE(memcmp(data, compressible, sizeof(compressible)) == 0);
@@ -1234,7 +1286,9 @@ static void TestWriterCompression(void)
 
 	/* Incompressible file: should be stored without IMPLODE flag. */
 	ASSERT_TRUE(mpqfs_has_file(archive, "incompressible"));
-	ASSERT_EQ_SZ(mpqfs_file_size(archive, "incompressible"), sizeof(incompressible));
+	size_t incompressibleSize = 0;
+	ASSERT_TRUE(mpqfs_file_size(archive, "incompressible", &incompressibleSize) == MPQFS_OK);
+	ASSERT_EQ_SZ(incompressibleSize, sizeof(incompressible));
 
 	{
 		uint32_t bi = mpq_lookup_file(archive, "incompressible");
@@ -1245,7 +1299,8 @@ static void TestWriterCompression(void)
 		ASSERT_EQ_U32(blk->compressed_size, blk->file_size);
 	}
 
-	data = mpqfs_read_file(archive, "incompressible", &readSize);
+	data = NULL;
+	ASSERT_TRUE(mpqfs_read_file(archive, "incompressible", &data, &readSize) == MPQFS_OK);
 	ASSERT_NOT_NULL(data);
 	ASSERT_EQ_SZ(readSize, sizeof(incompressible));
 	ASSERT_TRUE(memcmp(data, incompressible, sizeof(incompressible)) == 0);
@@ -1273,8 +1328,8 @@ static void TestReadShareSave(void)
 
 	/* Try to open share_0.sv from the project root.  If the file doesn't
 	 * exist (e.g. in CI), skip the test gracefully. */
-	mpqfs_archive_t *archive = mpqfs_open("share_0.sv");
-	if (!archive) {
+	mpqfs_archive_t *archive;
+	if (mpqfs_open("share_0.sv", &archive) != MPQFS_OK) {
 		/* Not a failure — the test fixture may not be present. */
 		printf("    (skipped: share_0.sv not found)\n");
 		g_tests_passed++;
@@ -1287,7 +1342,9 @@ static void TestReadShareSave(void)
 
 	/* ---- hero: 1288 bytes, IMPLODE compressed ---- */
 	ASSERT_TRUE(mpqfs_has_file(archive, "hero"));
-	ASSERT_EQ_SZ(mpqfs_file_size(archive, "hero"), 1288);
+	size_t heroSize = 0;
+	ASSERT_TRUE(mpqfs_file_size(archive, "hero", &heroSize) == MPQFS_OK);
+	ASSERT_EQ_SZ(heroSize, 1288);
 
 	{
 		uint32_t bi = mpq_lookup_file(archive, "hero");
@@ -1296,25 +1353,32 @@ static void TestReadShareSave(void)
 	}
 
 	size_t readSize = 0;
-	void *data = mpqfs_read_file(archive, "hero", &readSize);
+	void *data = NULL;
+	ASSERT_TRUE(mpqfs_read_file(archive, "hero", &data, &readSize) == MPQFS_OK);
 	ASSERT_NOT_NULL(data);
 	ASSERT_EQ_SZ(readSize, 1288);
 	free(data);
 
 	/* ---- heroitems: 20296 bytes, IMPLODE compressed ---- */
 	ASSERT_TRUE(mpqfs_has_file(archive, "heroitems"));
-	ASSERT_EQ_SZ(mpqfs_file_size(archive, "heroitems"), 20296);
+	size_t heroitemsSize = 0;
+	ASSERT_TRUE(mpqfs_file_size(archive, "heroitems", &heroitemsSize) == MPQFS_OK);
+	ASSERT_EQ_SZ(heroitemsSize, 20296);
 
-	data = mpqfs_read_file(archive, "heroitems", &readSize);
+	data = NULL;
+	ASSERT_TRUE(mpqfs_read_file(archive, "heroitems", &data, &readSize) == MPQFS_OK);
 	ASSERT_NOT_NULL(data);
 	ASSERT_EQ_SZ(readSize, 20296);
 	free(data);
 
 	/* ---- hotkeys: 136 bytes, IMPLODE compressed ---- */
 	ASSERT_TRUE(mpqfs_has_file(archive, "hotkeys"));
-	ASSERT_EQ_SZ(mpqfs_file_size(archive, "hotkeys"), 136);
+	size_t hotkeysSize = 0;
+	ASSERT_TRUE(mpqfs_file_size(archive, "hotkeys", &hotkeysSize) == MPQFS_OK);
+	ASSERT_EQ_SZ(hotkeysSize, 136);
 
-	data = mpqfs_read_file(archive, "hotkeys", &readSize);
+	data = NULL;
+	ASSERT_TRUE(mpqfs_read_file(archive, "hotkeys", &data, &readSize) == MPQFS_OK);
 	ASSERT_NOT_NULL(data);
 	ASSERT_EQ_SZ(readSize, 136);
 	free(data);
@@ -1355,16 +1419,15 @@ static void TestWriterSaveFileLayout(void)
 	int nfiles = 3;
 
 	/* Create archive. */
-	mpqfs_writer_t *writer = mpqfs_writer_create(tmpPath, hashTableSize);
+	mpqfs_writer_t *writer;
+	ASSERT_TRUE(mpqfs_writer_create(tmpPath, hashTableSize, &writer) == MPQFS_OK);
 	ASSERT_NOT_NULL(writer);
 
 	for (int i = 0; i < nfiles; i++) {
-		bool ok = mpqfs_writer_add_file(writer, names[i], datas[i], sizes[i]);
-		ASSERT_TRUE(ok);
+		ASSERT_TRUE(mpqfs_writer_add_file(writer, names[i], datas[i], sizes[i]) == MPQFS_OK);
 	}
 
-	bool ok = mpqfs_writer_close(writer);
-	ASSERT_TRUE(ok);
+	ASSERT_TRUE(mpqfs_writer_close(writer) == MPQFS_OK);
 
 	/* ---- Verify the on-disk layout matches DevilutionX ---- */
 
@@ -1406,10 +1469,12 @@ static void TestWriterSaveFileLayout(void)
 
 	/* ---- Verify round-trip: read all files back ---- */
 
-	mpqfs_archive_t *archive = mpqfs_open(tmpPath);
-	if (!archive) {
-		printf("    (mpqfs_open failed: %s)\n", mpqfs_last_error());
+	mpqfs_archive_t *archive;
+	mpqfs_error_code rc = mpqfs_open(tmpPath, &archive);
+	if (rc != MPQFS_OK) {
+		printf("    (mpqfs_open failed: %s)\n", mpqfs_error_message(rc));
 	}
+	ASSERT_TRUE(rc == MPQFS_OK);
 	ASSERT_NOT_NULL(archive);
 
 	/* Confirm the parsed header matches. */
@@ -1419,10 +1484,13 @@ static void TestWriterSaveFileLayout(void)
 
 	for (int i = 0; i < nfiles; i++) {
 		ASSERT_TRUE(mpqfs_has_file(archive, names[i]));
-		ASSERT_EQ_SZ(mpqfs_file_size(archive, names[i]), sizes[i]);
+		size_t fsize = 0;
+		ASSERT_TRUE(mpqfs_file_size(archive, names[i], &fsize) == MPQFS_OK);
+		ASSERT_EQ_SZ(fsize, sizes[i]);
 
 		size_t readSize = 0;
-		void *data = mpqfs_read_file(archive, names[i], &readSize);
+		void *data = NULL;
+		ASSERT_TRUE(mpqfs_read_file(archive, names[i], &data, &readSize) == MPQFS_OK);
 		ASSERT_NOT_NULL(data);
 		ASSERT_EQ_SZ(readSize, sizes[i]);
 		ASSERT_TRUE(memcmp(data, datas[i], sizes[i]) == 0);
@@ -1459,27 +1527,33 @@ static void TestCloneRoundtrip(void)
 	const uint8_t data[] = "Hello from clone test!";
 
 	/* Create a small archive. */
-	mpqfs_writer_t *w = mpqfs_writer_create(path, 4);
+	mpqfs_writer_t *w;
+	ASSERT_TRUE(mpqfs_writer_create(path, 4, &w) == MPQFS_OK);
 	ASSERT_NOT_NULL(w);
-	ASSERT_TRUE(mpqfs_writer_add_file(w, "greeting", data, sizeof(data)));
-	ASSERT_TRUE(mpqfs_writer_close(w));
+	ASSERT_TRUE(mpqfs_writer_add_file(w, "greeting", data, sizeof(data)) == MPQFS_OK);
+	ASSERT_TRUE(mpqfs_writer_close(w) == MPQFS_OK);
 
 	/* Open it. */
-	mpqfs_archive_t *archive = mpqfs_open(path);
+	mpqfs_archive_t *archive;
+	ASSERT_TRUE(mpqfs_open(path, &archive) == MPQFS_OK);
 	ASSERT_NOT_NULL(archive);
 	ASSERT_TRUE(mpqfs_has_file(archive, "greeting"));
 
 	/* Clone it. */
-	mpqfs_archive_t *clone = mpqfs_clone(archive);
+	mpqfs_archive_t *clone;
+	ASSERT_TRUE(mpqfs_clone(archive, &clone) == MPQFS_OK);
 	ASSERT_NOT_NULL(clone);
 
 	/* The clone should see the same files. */
 	ASSERT_TRUE(mpqfs_has_file(clone, "greeting"));
-	ASSERT_EQ_SZ(mpqfs_file_size(clone, "greeting"), sizeof(data));
+	size_t fsize = 0;
+	ASSERT_TRUE(mpqfs_file_size(clone, "greeting", &fsize) == MPQFS_OK);
+	ASSERT_EQ_SZ(fsize, sizeof(data));
 
 	/* Read from the clone. */
 	size_t readSize = 0;
-	void *buf = mpqfs_read_file(clone, "greeting", &readSize);
+	void *buf = NULL;
+	ASSERT_TRUE(mpqfs_read_file(clone, "greeting", &buf, &readSize) == MPQFS_OK);
 	ASSERT_NOT_NULL(buf);
 	ASSERT_EQ_SZ(readSize, sizeof(data));
 	ASSERT_TRUE(memcmp(buf, data, sizeof(data)) == 0);
@@ -1501,19 +1575,22 @@ static void TestCloneFpFails(void)
 	const char *path = "test_clone_fp.mpq";
 	const uint8_t data[] = "data";
 
-	mpqfs_writer_t *w = mpqfs_writer_create(path, 4);
+	mpqfs_writer_t *w;
+	ASSERT_TRUE(mpqfs_writer_create(path, 4, &w) == MPQFS_OK);
 	ASSERT_NOT_NULL(w);
-	ASSERT_TRUE(mpqfs_writer_add_file(w, "f", data, sizeof(data)));
-	ASSERT_TRUE(mpqfs_writer_close(w));
+	ASSERT_TRUE(mpqfs_writer_add_file(w, "f", data, sizeof(data)) == MPQFS_OK);
+	ASSERT_TRUE(mpqfs_writer_close(w) == MPQFS_OK);
 
 	FILE *fp = fopen(path, "rb");
 	ASSERT_NOT_NULL(fp);
 
-	mpqfs_archive_t *archive = mpqfs_open_fp(fp);
+	mpqfs_archive_t *archive;
+	ASSERT_TRUE(mpqfs_open_fp(fp, &archive) == MPQFS_OK);
 	ASSERT_NOT_NULL(archive);
 
 	/* Clone should fail — no path available. */
-	mpqfs_archive_t *clone = mpqfs_clone(archive);
+	mpqfs_archive_t *clone;
+	ASSERT_TRUE(mpqfs_clone(archive, &clone) == MPQFS_ERR_NO_PATH);
 	ASSERT_NULL(clone);
 
 	mpqfs_close(archive);
@@ -1528,7 +1605,8 @@ static void TestCloneNull(void)
 {
 	TEST_BEGIN("clone_null");
 
-	mpqfs_archive_t *clone = mpqfs_clone(NULL);
+	mpqfs_archive_t *clone;
+	ASSERT_TRUE(mpqfs_clone(NULL, &clone) == MPQFS_ERR_INVALID_ARGUMENT);
 	ASSERT_NULL(clone);
 
 	TEST_END();
@@ -1931,13 +2009,15 @@ static void TestFindHashBasic(void)
 	const char *data1 = "AAAA";
 	const char *data2 = "BBBBBB";
 
-	mpqfs_writer_t *writer = mpqfs_writer_create(tmpPath, 16);
+	mpqfs_writer_t *writer;
+	ASSERT_TRUE(mpqfs_writer_create(tmpPath, 16, &writer) == MPQFS_OK);
 	ASSERT_NOT_NULL(writer);
-	ASSERT_TRUE(mpqfs_writer_add_file(writer, fn1, data1, 4));
-	ASSERT_TRUE(mpqfs_writer_add_file(writer, fn2, data2, 6));
-	ASSERT_TRUE(mpqfs_writer_close(writer));
+	ASSERT_TRUE(mpqfs_writer_add_file(writer, fn1, data1, 4) == MPQFS_OK);
+	ASSERT_TRUE(mpqfs_writer_add_file(writer, fn2, data2, 6) == MPQFS_OK);
+	ASSERT_TRUE(mpqfs_writer_close(writer) == MPQFS_OK);
 
-	mpqfs_archive_t *archive = mpqfs_open(tmpPath);
+	mpqfs_archive_t *archive;
+	ASSERT_TRUE(mpqfs_open(tmpPath, &archive) == MPQFS_OK);
 	ASSERT_NOT_NULL(archive);
 
 	/* mpqfs_find_hash should return a valid index for existing files. */
@@ -1969,12 +2049,14 @@ static void TestHasFileHash(void)
 	const char *fn = "hero";
 	const char *data = "ABCDEFGHIJKLMNOP";
 
-	mpqfs_writer_t *writer = mpqfs_writer_create(tmpPath, 16);
+	mpqfs_writer_t *writer;
+	ASSERT_TRUE(mpqfs_writer_create(tmpPath, 16, &writer) == MPQFS_OK);
 	ASSERT_NOT_NULL(writer);
-	ASSERT_TRUE(mpqfs_writer_add_file(writer, fn, data, 16));
-	ASSERT_TRUE(mpqfs_writer_close(writer));
+	ASSERT_TRUE(mpqfs_writer_add_file(writer, fn, data, 16) == MPQFS_OK);
+	ASSERT_TRUE(mpqfs_writer_close(writer) == MPQFS_OK);
 
-	mpqfs_archive_t *archive = mpqfs_open(tmpPath);
+	mpqfs_archive_t *archive;
+	ASSERT_TRUE(mpqfs_open(tmpPath, &archive) == MPQFS_OK);
 	ASSERT_NOT_NULL(archive);
 
 	/* Look up the hash and verify it. */
@@ -2078,7 +2160,8 @@ static void TestFindHashSynthetic(void)
 	fclose(fp);
 	free(mpqBuf);
 
-	mpqfs_archive_t *archive = mpqfs_open(tmpPath);
+	mpqfs_archive_t *archive;
+	ASSERT_TRUE(mpqfs_open(tmpPath, &archive) == MPQFS_OK);
 	ASSERT_NOT_NULL(archive);
 
 	/* mpqfs_find_hash should return exactly the bucket we placed the entry in. */
@@ -2090,7 +2173,8 @@ static void TestFindHashSynthetic(void)
 
 	/* Reading via the hash should give us the same data as reading by name. */
 	size_t readSize = 0;
-	void *data = mpqfs_read_file(archive, testFilename, &readSize);
+	void *data = NULL;
+	ASSERT_TRUE(mpqfs_read_file(archive, testFilename, &data, &readSize) == MPQFS_OK);
 	ASSERT_NOT_NULL(data);
 	ASSERT_EQ_SZ(readSize, (size_t)fileDataLen);
 	ASSERT_TRUE(memcmp(data, fileData, fileDataLen) == 0);
@@ -2114,14 +2198,16 @@ static void TestHashMultiFile(void)
 	size_t sizes[] = { 3, 4, 5, 6 };
 	int count = 4;
 
-	mpqfs_writer_t *writer = mpqfs_writer_create(tmpPath, 16);
+	mpqfs_writer_t *writer;
+	ASSERT_TRUE(mpqfs_writer_create(tmpPath, 16, &writer) == MPQFS_OK);
 	ASSERT_NOT_NULL(writer);
 	for (int i = 0; i < count; i++) {
-		ASSERT_TRUE(mpqfs_writer_add_file(writer, names[i], datas[i], sizes[i]));
+		ASSERT_TRUE(mpqfs_writer_add_file(writer, names[i], datas[i], sizes[i]) == MPQFS_OK);
 	}
-	ASSERT_TRUE(mpqfs_writer_close(writer));
+	ASSERT_TRUE(mpqfs_writer_close(writer) == MPQFS_OK);
 
-	mpqfs_archive_t *archive = mpqfs_open(tmpPath);
+	mpqfs_archive_t *archive;
+	ASSERT_TRUE(mpqfs_open(tmpPath, &archive) == MPQFS_OK);
 	ASSERT_NOT_NULL(archive);
 
 	uint32_t hashes[4];
@@ -2157,33 +2243,40 @@ static void TestStreamApi(void)
 	size_t fileDataLen = sizeof(fileData);
 
 	/* Create an archive with one file. */
-	mpqfs_writer_t *writer = mpqfs_writer_create(tmpPath, 16);
+	mpqfs_writer_t *writer;
+	ASSERT_TRUE(mpqfs_writer_create(tmpPath, 16, &writer) == MPQFS_OK);
 	ASSERT_NOT_NULL(writer);
-	ASSERT_TRUE(mpqfs_writer_add_file(writer, filename, fileData, fileDataLen));
-	ASSERT_TRUE(mpqfs_writer_close(writer));
+	ASSERT_TRUE(mpqfs_writer_add_file(writer, filename, fileData, fileDataLen) == MPQFS_OK);
+	ASSERT_TRUE(mpqfs_writer_close(writer) == MPQFS_OK);
 
 	/* Open it back. */
-	mpqfs_archive_t *archive = mpqfs_open(tmpPath);
-	if (!archive) {
-		printf("    (mpqfs_open failed: %s)\n", mpqfs_last_error());
+	mpqfs_archive_t *archive;
+	mpqfs_error_code rc = mpqfs_open(tmpPath, &archive);
+	if (rc != MPQFS_OK) {
+		printf("    (mpqfs_open failed: %s)\n", mpqfs_error_message(rc));
 	}
+	ASSERT_TRUE(rc == MPQFS_OK);
 	ASSERT_NOT_NULL(archive);
 
 	/* 1. Open a stream by filename. */
-	mpqfs_stream_t *stream = mpqfs_stream_open(archive, filename);
+	mpqfs_stream_t *stream;
+	ASSERT_TRUE(mpqfs_stream_open(archive, filename, &stream) == MPQFS_OK);
 	ASSERT_NOT_NULL(stream);
 
 	/* 2. Check mpqfs_stream_size(). */
-	ASSERT_EQ_SZ(mpqfs_stream_size(stream), fileDataLen);
+	size_t streamSize = 0;
+	ASSERT_TRUE(mpqfs_stream_size(stream, &streamSize) == MPQFS_OK);
+	ASSERT_EQ_SZ(streamSize, fileDataLen);
 
 	/* 3. Read the full file via mpqfs_stream_read() and compare. */
 	uint8_t readBuf[8192];
 	memset(readBuf, 0, sizeof(readBuf));
 	size_t totalRead = 0;
 	while (totalRead < fileDataLen) {
-		size_t n = mpqfs_stream_read(stream, readBuf + totalRead,
-		    fileDataLen - totalRead);
-		ASSERT_TRUE(n != (size_t)-1);
+		size_t n = 0;
+		ASSERT_TRUE(mpqfs_stream_read(stream, readBuf + totalRead,
+		                fileDataLen - totalRead, &n)
+		    == MPQFS_OK);
 		if (n == 0)
 			break;
 		totalRead += n;
@@ -2193,39 +2286,45 @@ static void TestStreamApi(void)
 
 	/* 4. Seek to various positions and verify mpqfs_stream_tell(). */
 	int64_t pos;
+	int64_t tellPos;
 
 	/* SEEK_SET to beginning */
-	pos = mpqfs_stream_seek(stream, 0, SEEK_SET);
+	ASSERT_TRUE(mpqfs_stream_seek(stream, 0, SEEK_SET, &pos) == MPQFS_OK);
 	ASSERT_TRUE(pos == 0);
-	ASSERT_TRUE(mpqfs_stream_tell(stream) == 0);
+	ASSERT_TRUE(mpqfs_stream_tell(stream, &tellPos) == MPQFS_OK);
+	ASSERT_TRUE(tellPos == 0);
 
 	/* SEEK_SET to middle */
-	pos = mpqfs_stream_seek(stream, 4096, SEEK_SET);
+	ASSERT_TRUE(mpqfs_stream_seek(stream, 4096, SEEK_SET, &pos) == MPQFS_OK);
 	ASSERT_TRUE(pos == 4096);
-	ASSERT_TRUE(mpqfs_stream_tell(stream) == 4096);
+	ASSERT_TRUE(mpqfs_stream_tell(stream, &tellPos) == MPQFS_OK);
+	ASSERT_TRUE(tellPos == 4096);
 
 	/* Read a few bytes from the middle and verify content. */
 	uint8_t midBuf[16];
-	size_t midRead = mpqfs_stream_read(stream, midBuf, 16);
+	size_t midRead = 0;
+	ASSERT_TRUE(mpqfs_stream_read(stream, midBuf, 16, &midRead) == MPQFS_OK);
 	ASSERT_EQ_SZ(midRead, 16);
 	ASSERT_TRUE(memcmp(midBuf, fileData + 4096, 16) == 0);
-	ASSERT_TRUE(mpqfs_stream_tell(stream) == 4096 + 16);
+	ASSERT_TRUE(mpqfs_stream_tell(stream, &tellPos) == MPQFS_OK);
+	ASSERT_TRUE(tellPos == 4096 + 16);
 
 	/* SEEK_CUR backward */
-	pos = mpqfs_stream_seek(stream, -16, SEEK_CUR);
+	ASSERT_TRUE(mpqfs_stream_seek(stream, -16, SEEK_CUR, &pos) == MPQFS_OK);
 	ASSERT_TRUE(pos == 4096);
 
 	/* SEEK_END */
-	pos = mpqfs_stream_seek(stream, 0, SEEK_END);
+	ASSERT_TRUE(mpqfs_stream_seek(stream, 0, SEEK_END, &pos) == MPQFS_OK);
 	ASSERT_TRUE(pos == (int64_t)fileDataLen);
 
 	/* SEEK_END with negative offset */
-	pos = mpqfs_stream_seek(stream, -100, SEEK_END);
+	ASSERT_TRUE(mpqfs_stream_seek(stream, -100, SEEK_END, &pos) == MPQFS_OK);
 	ASSERT_TRUE(pos == (int64_t)(fileDataLen - 100));
 
 	/* Read from near the end */
 	uint8_t endBuf[100];
-	size_t endRead = mpqfs_stream_read(stream, endBuf, 100);
+	size_t endRead = 0;
+	ASSERT_TRUE(mpqfs_stream_read(stream, endBuf, 100, &endRead) == MPQFS_OK);
 	ASSERT_EQ_SZ(endRead, 100);
 	ASSERT_TRUE(memcmp(endBuf, fileData + fileDataLen - 100, 100) == 0);
 
@@ -2235,13 +2334,17 @@ static void TestStreamApi(void)
 	uint32_t hash = mpqfs_find_hash(archive, filename);
 	ASSERT_TRUE(hash != UINT32_MAX);
 
-	mpqfs_stream_t *stream2 = mpqfs_stream_open_from_hash(archive, hash);
+	mpqfs_stream_t *stream2;
+	ASSERT_TRUE(mpqfs_stream_open_from_hash(archive, hash, &stream2) == MPQFS_OK);
 	ASSERT_NOT_NULL(stream2);
-	ASSERT_EQ_SZ(mpqfs_stream_size(stream2), fileDataLen);
+	size_t stream2Size = 0;
+	ASSERT_TRUE(mpqfs_stream_size(stream2, &stream2Size) == MPQFS_OK);
+	ASSERT_EQ_SZ(stream2Size, fileDataLen);
 
 	/* Read the first 32 bytes and verify. */
 	uint8_t hashBuf[32];
-	size_t hashRead = mpqfs_stream_read(stream2, hashBuf, 32);
+	size_t hashRead = 0;
+	ASSERT_TRUE(mpqfs_stream_read(stream2, hashBuf, 32, &hashRead) == MPQFS_OK);
 	ASSERT_EQ_SZ(hashRead, 32);
 	ASSERT_TRUE(memcmp(hashBuf, fileData, 32) == 0);
 
@@ -2251,7 +2354,9 @@ static void TestStreamApi(void)
 	mpqfs_stream_close(NULL);
 
 	/* Non-existent file should return NULL. */
-	ASSERT_NULL(mpqfs_stream_open(archive, "nonexistent"));
+	mpqfs_stream_t *missingStream;
+	ASSERT_TRUE(mpqfs_stream_open(archive, "nonexistent", &missingStream) == MPQFS_ERR_FILE_NOT_FOUND);
+	ASSERT_NULL(missingStream);
 
 	mpqfs_close(archive);
 	remove(tmpPath);
@@ -2276,9 +2381,10 @@ static int InteractiveMode(const char *mpqPath, const char *filename)
 {
 	fprintf(stderr, "Opening: %s\n", mpqPath);
 
-	mpqfs_archive_t *archive = mpqfs_open(mpqPath);
-	if (!archive) {
-		fprintf(stderr, "Error: %s\n", mpqfs_last_error());
+	mpqfs_archive_t *archive;
+	mpqfs_error_code openRc = mpqfs_open(mpqPath, &archive);
+	if (openRc != MPQFS_OK) {
+		fprintf(stderr, "Error: %s\n", mpqfs_error_message(openRc));
 		return 1;
 	}
 
@@ -2306,7 +2412,8 @@ static int InteractiveMode(const char *mpqPath, const char *filename)
 			return 1;
 		}
 
-		size_t fsize = mpqfs_file_size(archive, filename);
+		size_t fsize = 0;
+		mpqfs_file_size(archive, filename, &fsize);
 		fprintf(stderr, "File size: %zu bytes\n", fsize);
 
 		/* Also show the block entry details for this file. */
@@ -2323,9 +2430,10 @@ static int InteractiveMode(const char *mpqPath, const char *filename)
 		}
 
 		size_t readSize = 0;
-		void *data = mpqfs_read_file(archive, filename, &readSize);
-		if (!data) {
-			fprintf(stderr, "Error reading file: %s\n", mpqfs_last_error());
+		void *data = NULL;
+		mpqfs_error_code readRc = mpqfs_read_file(archive, filename, &data, &readSize);
+		if (readRc != MPQFS_OK) {
+			fprintf(stderr, "Error reading file: %s\n", mpqfs_error_message(readRc));
 			mpqfs_close(archive);
 			return 1;
 		}

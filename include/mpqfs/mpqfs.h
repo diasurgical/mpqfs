@@ -79,6 +79,30 @@
 #endif
 #endif
 
+/* -----------------------------------------------------------------------
+ * MPQFS_NODISCARD
+ *
+ * Expands to [[nodiscard]] where the compiler supports attaching it to a
+ * type (C++17 or later, or C23), and to nothing otherwise.  Applied to
+ * the mpqfs_error_code type itself, so every function returning it is
+ * implicitly nodiscard.
+ *
+ * GCC/Clang's __attribute__((warn_unused_result)) is deliberately not
+ * used as a fallback here: unlike [[nodiscard]], it only applies to
+ * function types in C, not enum types, and would just emit a spurious
+ * "attribute only applies to function types" warning.
+ * ----------------------------------------------------------------------- */
+
+#ifndef MPQFS_NODISCARD
+#if defined(__cplusplus) && __cplusplus >= 201703L
+#define MPQFS_NODISCARD [[nodiscard]]
+#elif !defined(__cplusplus) && defined(__STDC_VERSION__) && __STDC_VERSION__ >= 202311L
+#define MPQFS_NODISCARD [[nodiscard]]
+#else
+#define MPQFS_NODISCARD /* unavailable on this compiler/language mode */
+#endif
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -98,6 +122,83 @@ typedef struct mpqfs_writer mpqfs_writer_t;
 typedef struct mpqfs_stream mpqfs_stream_t;
 
 /* -----------------------------------------------------------------------
+ * Error handling
+ *
+ * Every fallible function returns an mpqfs_error_code.  MPQFS_OK (0)
+ * means success; any other value means failure and no output parameter
+ * is valid (pointers are set to NULL, sizes/positions to 0).
+ *
+ * mpqfs_error_message() maps a code to a static, human-readable string
+ * for logging/diagnostics.  It does not carry call-specific detail (e.g.
+ * which filename or errno was involved) — only the general category of
+ * failure.
+ * ----------------------------------------------------------------------- */
+
+typedef enum MPQFS_NODISCARD mpqfs_error_code {
+	/* Success. */
+	MPQFS_OK = 0,
+
+	/* NULL/out-of-range argument. */
+	MPQFS_ERR_INVALID_ARGUMENT,
+
+	/* Allocation failed. */
+	MPQFS_ERR_OUT_OF_MEMORY,
+
+	/*
+	 * Underlying fopen/fread/fwrite/fseek failed.  The specific OS error
+	 * is available via errno immediately after the call returns, on
+	 * platforms where mpqfs uses errno-setting stdio calls
+	 * (fopen/fdopen/fread/fwrite/fseek).
+	 */
+	MPQFS_ERR_IO,
+
+	/* MPQ signature not found. */
+	MPQFS_ERR_NOT_MPQ,
+
+	/* Format version other than v1 / 0. */
+	MPQFS_ERR_UNSUPPORTED_VERSION,
+
+	/* Malformed header, tables, or sector data. */
+	MPQFS_ERR_CORRUPT_ARCHIVE,
+
+	/* Requested file does not exist in the archive. */
+	MPQFS_ERR_FILE_NOT_FOUND,
+
+	/* Hash table entry index out of range. */
+	MPQFS_ERR_INVALID_HASH,
+
+	/* Encrypted file opened without a filename. */
+	MPQFS_ERR_ENCRYPTED_NO_KEY,
+
+	/* Compression method unknown/not built in. */
+	MPQFS_ERR_UNSUPPORTED_COMPRESSION,
+
+	/* A decompression call failed. */
+	MPQFS_ERR_DECOMPRESS_FAILED,
+
+	/* Caller-supplied buffer too small. */
+	MPQFS_ERR_BUFFER_TOO_SMALL,
+
+	/* Writer's hash table has no room left. */
+	MPQFS_ERR_HASH_TABLE_FULL,
+
+	/* Archive has no known filesystem path to clone. */
+	MPQFS_ERR_NO_PATH,
+} mpqfs_error_code;
+
+/**
+ * Return a static, human-readable description of an error code.
+ *
+ * The returned pointer is valid for the lifetime of the program and does
+ * not need to be freed.
+ *
+ * @param code  An mpqfs_error_code value.
+ * @return      A human-readable description, or "unknown error" for an
+ *              unrecognized code.
+ */
+MPQFS_API const char *mpqfs_error_message(mpqfs_error_code code);
+
+/* -----------------------------------------------------------------------
  * Archive lifecycle (reading)
  * ----------------------------------------------------------------------- */
 
@@ -107,10 +208,12 @@ typedef struct mpqfs_stream mpqfs_stream_t;
  * The archive file is kept open for the lifetime of the returned handle;
  * call mpqfs_close() when done.
  *
- * @param path  Filesystem path to the .mpq file (e.g. "DIABDAT.MPQ").
- * @return      Opaque archive handle, or NULL on error (see mpqfs_last_error()).
+ * @param path         Filesystem path to the .mpq file (e.g. "DIABDAT.MPQ").
+ * @param out_archive  Receives the opaque archive handle on success, or
+ *                      NULL on failure.  Must not be NULL.
+ * @return              MPQFS_OK on success, or an error code.
  */
-MPQFS_API mpqfs_archive_t *mpqfs_open(const char *path);
+MPQFS_API mpqfs_error_code mpqfs_open(const char *path, mpqfs_archive_t **out_archive);
 
 /**
  * Open an MPQ archive from an already-open FILE pointer.
@@ -120,11 +223,13 @@ MPQFS_API mpqfs_archive_t *mpqfs_open(const char *path);
  * must ensure it remains valid for the lifetime of the returned handle
  * and must fclose() it after calling mpqfs_close().
  *
- * @param fp  A readable FILE* positioned anywhere; the library will scan
- *            for the MPQ header.
- * @return    Opaque archive handle, or NULL on error.
+ * @param fp           A readable FILE* positioned anywhere; the library
+ *                      will scan for the MPQ header.
+ * @param out_archive  Receives the opaque archive handle on success, or
+ *                      NULL on failure.  Must not be NULL.
+ * @return              MPQFS_OK on success, or an error code.
  */
-MPQFS_API mpqfs_archive_t *mpqfs_open_fp(FILE *fp);
+MPQFS_API mpqfs_error_code mpqfs_open_fp(FILE *fp, mpqfs_archive_t **out_archive);
 
 #if MPQFS_HAS_FDOPEN
 
@@ -137,11 +242,13 @@ MPQFS_API mpqfs_archive_t *mpqfs_open_fp(FILE *fp);
  * This function is only available on platforms that provide fdopen()
  * (POSIX, Windows via _fdopen, DJGPP).  Check MPQFS_HAS_FDOPEN.
  *
- * @param fd  A readable file descriptor positioned anywhere; the library
- *            will scan for the MPQ header.
- * @return    Opaque archive handle, or NULL on error.
+ * @param fd           A readable file descriptor positioned anywhere; the
+ *                      library will scan for the MPQ header.
+ * @param out_archive  Receives the opaque archive handle on success, or
+ *                      NULL on failure.  Must not be NULL.
+ * @return              MPQFS_OK on success, or an error code.
  */
-MPQFS_API mpqfs_archive_t *mpqfs_open_fd(int fd);
+MPQFS_API mpqfs_error_code mpqfs_open_fd(int fd, mpqfs_archive_t **out_archive);
 
 #endif /* MPQFS_HAS_FDOPEN */
 
@@ -156,13 +263,16 @@ MPQFS_API mpqfs_archive_t *mpqfs_open_fd(int fd);
  * a cloned archive so its fseek/fread calls don't race with the main
  * thread.
  *
- * Returns NULL on error (e.g. if the original was opened via
- * mpqfs_open_fp and the path is not known).
+ * Fails with MPQFS_ERR_NO_PATH if the original was opened via
+ * mpqfs_open_fp and the path is not known.
  *
- * @param archive  Handle to clone (must not be NULL).
- * @return         New archive handle, or NULL on error (see mpqfs_last_error()).
+ * @param archive    Handle to clone (must not be NULL).
+ * @param out_archive  Receives the new archive handle on success, or
+ *                      NULL on failure.  Must not be NULL.
+ * @return              MPQFS_OK on success, or an error code.
  */
-MPQFS_API mpqfs_archive_t *mpqfs_clone(const mpqfs_archive_t *archive);
+MPQFS_API mpqfs_error_code mpqfs_clone(const mpqfs_archive_t *archive,
+    mpqfs_archive_t **out_archive);
 
 /**
  * Close an archive and free all associated resources.
@@ -229,9 +339,13 @@ MPQFS_API bool mpqfs_has_file_hash(mpqfs_archive_t *archive, uint32_t hash);
  *
  * @param archive   Open archive handle.
  * @param filename  Archive-relative path.
- * @return          Uncompressed size in bytes, or 0 if the file is not found.
+ * @param out_size  Receives the uncompressed size in bytes on success, or
+ *                    0 on failure.  Must not be NULL.
+ * @return           MPQFS_OK on success, or an error code (e.g.
+ *                    MPQFS_ERR_FILE_NOT_FOUND).
  */
-MPQFS_API size_t mpqfs_file_size(mpqfs_archive_t *archive, const char *filename);
+MPQFS_API mpqfs_error_code mpqfs_file_size(mpqfs_archive_t *archive,
+    const char *filename, size_t *out_size);
 
 /**
  * @brief Return the uncompressed size of the file identified by hash.
@@ -241,9 +355,12 @@ MPQFS_API size_t mpqfs_file_size(mpqfs_archive_t *archive, const char *filename)
  *
  * @param archive   Open archive handle.
  * @param hash      Hash table entry index.
- * @return          Uncompressed size in bytes, or 0 on error.
+ * @param out_size  Receives the uncompressed size in bytes on success, or
+ *                    0 on failure.  Must not be NULL.
+ * @return           MPQFS_OK on success, or an error code.
  */
-MPQFS_API size_t mpqfs_file_size_from_hash(mpqfs_archive_t *archive, uint32_t hash);
+MPQFS_API mpqfs_error_code mpqfs_file_size_from_hash(mpqfs_archive_t *archive,
+    uint32_t hash, size_t *out_size);
 
 /* -----------------------------------------------------------------------
  * Whole-file reads
@@ -252,28 +369,36 @@ MPQFS_API size_t mpqfs_file_size_from_hash(mpqfs_archive_t *archive, uint32_t ha
 /**
  * Read an entire file into a newly allocated buffer.
  *
- * The caller is responsible for calling free() on the returned pointer.
+ * The caller is responsible for calling free() on *out_data.
  *
  * @param archive   Open archive handle.
  * @param filename  Archive-relative path.
- * @param out_size  If non-NULL, receives the number of bytes read.
- * @return          Pointer to the file data, or NULL on error.
+ * @param out_data  Receives a pointer to the file data on success, or
+ *                    NULL on failure.  Must not be NULL.
+ * @param out_size  Receives the number of bytes read on success, or 0 on
+ *                    failure.  Must not be NULL.
+ * @return           MPQFS_OK on success, or an error code.
  */
-MPQFS_API void *mpqfs_read_file(mpqfs_archive_t *archive, const char *filename,
-    size_t *out_size);
+MPQFS_API mpqfs_error_code mpqfs_read_file(mpqfs_archive_t *archive,
+    const char *filename, void **out_data, size_t *out_size);
 
 /**
  * Read an entire file into a caller-supplied buffer.
  *
- * @param archive     Open archive handle.
- * @param filename    Archive-relative path.
- * @param buffer      Destination buffer.
- * @param buffer_size Size of the destination buffer in bytes.
- * @return            Number of bytes written to the buffer, or 0 on error.
+ * @param archive         Open archive handle.
+ * @param filename        Archive-relative path.
+ * @param buffer          Destination buffer.
+ * @param buffer_size     Size of the destination buffer in bytes.
+ * @param out_bytes_read  Receives the number of bytes written to the
+ *                          buffer on success, or 0 on failure.  Must not
+ *                          be NULL.
+ * @return                 MPQFS_OK on success, or an error code (e.g.
+ *                          MPQFS_ERR_BUFFER_TOO_SMALL).
  */
-MPQFS_API size_t mpqfs_read_file_into(mpqfs_archive_t *archive,
+MPQFS_API mpqfs_error_code mpqfs_read_file_into(mpqfs_archive_t *archive,
     const char *filename,
-    void *buffer, size_t buffer_size);
+    void *buffer, size_t buffer_size,
+    size_t *out_bytes_read);
 
 /* -----------------------------------------------------------------------
  * File streaming
@@ -295,12 +420,14 @@ MPQFS_API size_t mpqfs_read_file_into(mpqfs_archive_t *archive,
  * The archive must remain open for the lifetime of the stream.
  * Closing the stream does NOT close the archive.
  *
- * @param archive   Open archive handle.
- * @param filename  Archive-relative path (NUL-terminated).
- * @return          Stream handle, or NULL on error (see mpqfs_last_error()).
+ * @param archive    Open archive handle.
+ * @param filename   Archive-relative path (NUL-terminated).
+ * @param out_stream  Receives the stream handle on success, or NULL on
+ *                     failure.  Must not be NULL.
+ * @return            MPQFS_OK on success, or an error code.
  */
-MPQFS_API mpqfs_stream_t *mpqfs_stream_open(mpqfs_archive_t *archive,
-    const char *filename);
+MPQFS_API mpqfs_error_code mpqfs_stream_open(mpqfs_archive_t *archive,
+    const char *filename, mpqfs_stream_t **out_stream);
 
 /**
  * Open a stream using a pre-resolved hash table entry index.
@@ -312,12 +439,14 @@ MPQFS_API mpqfs_stream_t *mpqfs_stream_open(mpqfs_archive_t *archive,
  *       filename is not available for key derivation.  For Diablo 1
  *       assets (which are never encrypted) this is not a limitation.
  *
- * @param archive  Open archive handle.
- * @param hash     Hash table entry index (from mpqfs_find_hash()).
- * @return         Stream handle, or NULL on error.
+ * @param archive    Open archive handle.
+ * @param hash       Hash table entry index (from mpqfs_find_hash()).
+ * @param out_stream  Receives the stream handle on success, or NULL on
+ *                     failure.  Must not be NULL.
+ * @return            MPQFS_OK on success, or an error code.
  */
-MPQFS_API mpqfs_stream_t *mpqfs_stream_open_from_hash(mpqfs_archive_t *archive,
-    uint32_t hash);
+MPQFS_API mpqfs_error_code mpqfs_stream_open_from_hash(mpqfs_archive_t *archive,
+    uint32_t hash, mpqfs_stream_t **out_stream);
 
 /**
  * Close a stream and free all associated memory.
@@ -333,38 +462,50 @@ MPQFS_API void mpqfs_stream_close(mpqfs_stream_t *stream);
  *
  * Advances the stream position by the number of bytes read.
  *
- * @param stream  Stream handle.
- * @param buf     Destination buffer.
- * @param count   Maximum number of bytes to read.
- * @return        Number of bytes read, or (size_t)-1 on error.
+ * @param stream    Stream handle.
+ * @param buf       Destination buffer.
+ * @param count     Maximum number of bytes to read.
+ * @param out_read  Receives the number of bytes read on success, or 0 on
+ *                   failure.  Must not be NULL.
+ * @return           MPQFS_OK on success, or an error code.
  */
-MPQFS_API size_t mpqfs_stream_read(mpqfs_stream_t *stream, void *buf, size_t count);
+MPQFS_API mpqfs_error_code mpqfs_stream_read(mpqfs_stream_t *stream, void *buf,
+    size_t count, size_t *out_read);
 
 /**
  * Seek to an absolute position within the uncompressed file.
  *
- * @param stream  Stream handle.
- * @param offset  Byte offset (interpretation depends on @p whence).
- * @param whence  SEEK_SET, SEEK_CUR, or SEEK_END.
- * @return        New absolute position, or -1 on error.
+ * @param stream        Stream handle.
+ * @param offset        Byte offset (interpretation depends on @p whence).
+ * @param whence        SEEK_SET, SEEK_CUR, or SEEK_END.
+ * @param out_position  Receives the new absolute position on success, or
+ *                        0 on failure.  Must not be NULL.
+ * @return               MPQFS_OK on success, or an error code.
  */
-MPQFS_API int64_t mpqfs_stream_seek(mpqfs_stream_t *stream, int64_t offset, int whence);
+MPQFS_API mpqfs_error_code mpqfs_stream_seek(mpqfs_stream_t *stream,
+    int64_t offset, int whence, int64_t *out_position);
 
 /**
  * Return the current read position within the uncompressed file.
  *
- * @param stream  Stream handle.
- * @return        Current position in bytes.
+ * @param stream        Stream handle.
+ * @param out_position  Receives the current position in bytes on
+ *                        success, or 0 on failure.  Must not be NULL.
+ * @return               MPQFS_OK on success, or an error code.
  */
-MPQFS_API int64_t mpqfs_stream_tell(mpqfs_stream_t *stream);
+MPQFS_API mpqfs_error_code mpqfs_stream_tell(mpqfs_stream_t *stream,
+    int64_t *out_position);
 
 /**
  * Return the total uncompressed size of the streamed file.
  *
- * @param stream  Stream handle.
- * @return        Total size in bytes.
+ * @param stream    Stream handle.
+ * @param out_size  Receives the total size in bytes on success, or 0 on
+ *                   failure.  Must not be NULL.
+ * @return           MPQFS_OK on success, or an error code.
  */
-MPQFS_API size_t mpqfs_stream_size(mpqfs_stream_t *stream);
+MPQFS_API mpqfs_error_code mpqfs_stream_size(mpqfs_stream_t *stream,
+    size_t *out_size);
 
 /* -----------------------------------------------------------------------
  * Archive writing (Diablo 1 save-game compatible)
@@ -388,7 +529,8 @@ MPQFS_API size_t mpqfs_stream_size(mpqfs_stream_t *stream);
  *
  * Typical usage:
  *
- *   mpqfs_writer_t *w = mpqfs_writer_create("save.sv", 16);
+ *   mpqfs_writer_t *w;
+ *   mpqfs_writer_create("save.sv", 16, &w);
  *   mpqfs_writer_add_file(w, "hero", hero_data, hero_size);
  *   mpqfs_writer_add_file(w, "game", game_data, game_size);
  *   mpqfs_writer_close(w);          // finalises and frees the writer
@@ -411,10 +553,12 @@ MPQFS_API size_t mpqfs_stream_size(mpqfs_stream_t *stream);
  * @param hash_table_size  Desired number of hash table entries.  Will be
  *                         rounded up to the next power of two (minimum 4).
  *                         Must be larger than the number of files to add.
- * @return                 Writer handle, or NULL on error (see mpqfs_last_error()).
+ * @param out_writer       Receives the writer handle on success, or NULL
+ *                          on failure.  Must not be NULL.
+ * @return                  MPQFS_OK on success, or an error code.
  */
-MPQFS_API mpqfs_writer_t *mpqfs_writer_create(const char *path,
-    uint32_t hash_table_size);
+MPQFS_API mpqfs_error_code mpqfs_writer_create(const char *path,
+    uint32_t hash_table_size, mpqfs_writer_t **out_writer);
 
 /**
  * Create a new MPQ archive writer targeting an already-open FILE pointer.
@@ -426,10 +570,12 @@ MPQFS_API mpqfs_writer_t *mpqfs_writer_create(const char *path,
  * @param fp               A writable FILE* positioned at the desired
  *                         archive start (typically offset 0).
  * @param hash_table_size  Desired number of hash table entries (see above).
- * @return                 Writer handle, or NULL on error.
+ * @param out_writer       Receives the writer handle on success, or NULL
+ *                          on failure.  Must not be NULL.
+ * @return                  MPQFS_OK on success, or an error code.
  */
-MPQFS_API mpqfs_writer_t *mpqfs_writer_create_fp(FILE *fp,
-    uint32_t hash_table_size);
+MPQFS_API mpqfs_error_code mpqfs_writer_create_fp(FILE *fp,
+    uint32_t hash_table_size, mpqfs_writer_t **out_writer);
 
 #if MPQFS_HAS_FDOPEN
 
@@ -441,10 +587,12 @@ MPQFS_API mpqfs_writer_t *mpqfs_writer_create_fp(FILE *fp,
  *
  * @param fd               A writable file descriptor.
  * @param hash_table_size  Desired number of hash table entries (see above).
- * @return                 Writer handle, or NULL on error.
+ * @param out_writer       Receives the writer handle on success, or NULL
+ *                          on failure.  Must not be NULL.
+ * @return                  MPQFS_OK on success, or an error code.
  */
-MPQFS_API mpqfs_writer_t *mpqfs_writer_create_fd(int fd,
-    uint32_t hash_table_size);
+MPQFS_API mpqfs_error_code mpqfs_writer_create_fd(int fd,
+    uint32_t hash_table_size, mpqfs_writer_t **out_writer);
 
 #endif /* MPQFS_HAS_FDOPEN */
 
@@ -466,9 +614,9 @@ MPQFS_API mpqfs_writer_t *mpqfs_writer_create_fd(int fd,
  *                  slashes are accepted and normalised during hashing.
  * @param data      Pointer to the file data (may be NULL if size is 0).
  * @param size      Size of the file data in bytes.
- * @return          true on success, false on error.
+ * @return          MPQFS_OK on success, or an error code.
  */
-MPQFS_API bool mpqfs_writer_add_file(mpqfs_writer_t *writer,
+MPQFS_API mpqfs_error_code mpqfs_writer_add_file(mpqfs_writer_t *writer,
     const char *filename,
     const void *data, size_t size);
 
@@ -492,15 +640,15 @@ MPQFS_API bool mpqfs_writer_has_file(const mpqfs_writer_t *writer,
  * stored in the writer's metadata is changed, which affects the hash
  * table entry that will be generated during mpqfs_writer_close().
  *
- * If @p old_name is not found (or was already removed), this is a no-op
- * and returns false.
+ * Fails with MPQFS_ERR_FILE_NOT_FOUND if @p old_name is not found (or
+ * was already removed).
  *
  * @param writer    Writer handle.
  * @param old_name  Current archive-relative filename.
  * @param new_name  New archive-relative filename.
- * @return          true if the file was found and renamed, false otherwise.
+ * @return          MPQFS_OK on success, or an error code.
  */
-MPQFS_API bool mpqfs_writer_rename_file(mpqfs_writer_t *writer,
+MPQFS_API mpqfs_error_code mpqfs_writer_rename_file(mpqfs_writer_t *writer,
     const char *old_name,
     const char *new_name);
 
@@ -512,14 +660,14 @@ MPQFS_API bool mpqfs_writer_rename_file(mpqfs_writer_t *writer,
  * and hash table entries will be omitted from the tables written by
  * mpqfs_writer_close().
  *
- * If @p filename is not found (or was already removed), this is a
- * no-op and returns false.
+ * Fails with MPQFS_ERR_FILE_NOT_FOUND if @p filename is not found (or
+ * was already removed).
  *
  * @param writer    Writer handle.
  * @param filename  Archive-relative filename to remove.
- * @return          true if the file was found and removed, false otherwise.
+ * @return          MPQFS_OK on success, or an error code.
  */
-MPQFS_API bool mpqfs_writer_remove_file(mpqfs_writer_t *writer,
+MPQFS_API mpqfs_error_code mpqfs_writer_remove_file(mpqfs_writer_t *writer,
     const char *filename);
 
 /**
@@ -538,9 +686,9 @@ MPQFS_API bool mpqfs_writer_remove_file(mpqfs_writer_t *writer,
  * @param filename     Archive-relative filename for the new entry.
  * @param archive      Open source archive to read from.
  * @param block_index  Block table index of the file in @p archive.
- * @return             true on success, false on error.
+ * @return             MPQFS_OK on success, or an error code.
  */
-MPQFS_API bool mpqfs_writer_carry_forward(mpqfs_writer_t *writer,
+MPQFS_API mpqfs_error_code mpqfs_writer_carry_forward(mpqfs_writer_t *writer,
     const char *filename,
     mpqfs_archive_t *archive,
     uint32_t block_index);
@@ -566,9 +714,9 @@ MPQFS_API bool mpqfs_writer_carry_forward(mpqfs_writer_t *writer,
  *
  * @param writer   Writer handle.
  * @param archive  Open source archive to read from.
- * @return         true on success, false on error.
+ * @return         MPQFS_OK on success, or an error code.
  */
-MPQFS_API bool mpqfs_writer_carry_forward_all(mpqfs_writer_t *writer,
+MPQFS_API mpqfs_error_code mpqfs_writer_carry_forward_all(mpqfs_writer_t *writer,
     mpqfs_archive_t *archive);
 
 /**
@@ -582,9 +730,9 @@ MPQFS_API bool mpqfs_writer_carry_forward_all(mpqfs_writer_t *writer,
  * whether the call succeeded or failed.
  *
  * @param writer  Writer handle (consumed — do not use after this call).
- * @return        true on success, false if writing failed.
+ * @return        MPQFS_OK on success, or an error code if writing failed.
  */
-MPQFS_API bool mpqfs_writer_close(mpqfs_writer_t *writer);
+MPQFS_API mpqfs_error_code mpqfs_writer_close(mpqfs_writer_t *writer);
 
 /**
  * Discard a writer without writing any archive data.
@@ -596,20 +744,6 @@ MPQFS_API bool mpqfs_writer_close(mpqfs_writer_t *writer);
  *                NULL is safely ignored.
  */
 MPQFS_API void mpqfs_writer_discard(mpqfs_writer_t *writer);
-
-/* -----------------------------------------------------------------------
- * Error handling
- * ----------------------------------------------------------------------- */
-
-/**
- * Return a human-readable description of the last error that occurred
- * on the calling thread, or NULL if no error has been recorded.
- *
- * The returned pointer is valid until the next mpqfs call on the same
- * thread.  On single-threaded platforms (DOS, PS2, ...) it is a
- * process-global.
- */
-MPQFS_API const char *mpqfs_last_error(void);
 
 /* -----------------------------------------------------------------------
  * Crypto primitives

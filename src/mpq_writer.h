@@ -80,20 +80,7 @@ struct mpqfs_writer {
 
 	uint32_t data_start;  /* Offset where file data begins (after hdr+tables) */
 	uint32_t data_cursor; /* Current write offset for next file's data        */
-
-	char error[256]; /* Last error message                       */
 };
-
-/* -----------------------------------------------------------------------
- * Internal helpers (implemented in mpq_writer.c)
- * ----------------------------------------------------------------------- */
-
-/*
- * Set the writer's error string (printf-style).
- * Also mirrors the message to the thread-local g_last_error.
- */
-void mpq_writer_set_error(mpqfs_writer_t *writer, const char *fmt, ...)
-    MPQFS_PRINTF_ATTR(2, 3);
 
 #ifdef __cplusplus
 }

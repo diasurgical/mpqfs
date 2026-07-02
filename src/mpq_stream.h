@@ -88,12 +88,14 @@ struct mpqfs_stream {
 
 /*
  * Open a stream to the file identified by `block_index` inside `archive`.
- * Returns NULL on error (sets mpqfs_last_error).
+ * On success, *out_stream receives the new handle and MPQFS_OK is returned.
+ * On failure, *out_stream is set to NULL and an error code is returned.
  *
  * This variant does NOT support encrypted files — use mpq_stream_open_named()
  * instead when the file may be encrypted.
  */
-mpqfs_stream_t *mpq_stream_open(mpqfs_archive_t *archive, uint32_t blockIndex);
+mpqfs_error_code mpq_stream_open(mpqfs_archive_t *archive, uint32_t blockIndex,
+    mpqfs_stream_t **outStream);
 
 /*
  * Open a stream to the file identified by `block_index`, using `filename`
@@ -103,11 +105,13 @@ mpqfs_stream_t *mpq_stream_open(mpqfs_archive_t *archive, uint32_t blockIndex);
  * "(listfile)").  If the file is not encrypted, `filename` is ignored and
  * the call is equivalent to mpq_stream_open().
  *
- * Returns NULL on error (sets mpqfs_last_error).
+ * On success, *out_stream receives the new handle and MPQFS_OK is returned.
+ * On failure, *out_stream is set to NULL and an error code is returned.
  */
-mpqfs_stream_t *mpq_stream_open_named(mpqfs_archive_t *archive,
+mpqfs_error_code mpq_stream_open_named(mpqfs_archive_t *archive,
     uint32_t blockIndex,
-    const char *filename);
+    const char *filename,
+    mpqfs_stream_t **outStream);
 
 /*
  * Close a stream and free all associated memory.
@@ -118,26 +122,32 @@ void mpq_stream_close(mpqfs_stream_t *stream);
 /*
  * Read up to `count` bytes from the stream at its current position into `buf`.
  * Advances the position by the number of bytes actually read.
- * Returns the number of bytes read, or (size_t)-1 on error.
+ * On success, *out_read receives the number of bytes read (may be less
+ * than `count` at EOF) and MPQFS_OK is returned.  On failure, *out_read
+ * is set to 0 and an error code is returned.
  */
-size_t mpq_stream_read(mpqfs_stream_t *stream, void *buf, size_t count);
+mpqfs_error_code mpq_stream_read(mpqfs_stream_t *stream, void *buf,
+    size_t count, size_t *outRead);
 
 /*
  * Seek to an absolute position within the uncompressed file.
  * Supports SEEK_SET, SEEK_CUR, SEEK_END (same semantics as fseek/lseek).
- * Returns the new absolute position, or -1 on error.
+ * On success, *out_position receives the new absolute position and
+ * MPQFS_OK is returned.  On failure, *out_position is set to 0 and an
+ * error code is returned.
  */
-int64_t mpq_stream_seek(mpqfs_stream_t *stream, int64_t offset, int whence);
+mpqfs_error_code mpq_stream_seek(mpqfs_stream_t *stream, int64_t offset,
+    int whence, int64_t *outPosition);
 
 /*
  * Return the current read position.
  */
-int64_t mpq_stream_tell(mpqfs_stream_t *stream);
+mpqfs_error_code mpq_stream_tell(mpqfs_stream_t *stream, int64_t *outPosition);
 
 /*
  * Return the total uncompressed size of the file.
  */
-size_t mpq_stream_size(mpqfs_stream_t *stream);
+mpqfs_error_code mpq_stream_size(mpqfs_stream_t *stream, size_t *outSize);
 
 #ifdef __cplusplus
 }

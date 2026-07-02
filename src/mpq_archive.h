@@ -114,8 +114,6 @@ struct mpqfs_archive {
 	mpq_block_entry_t *block_table; /* Decrypted block table (heap alloc) */
 
 	char *path; /* Filesystem path (strdup, may be NULL) */
-
-	char error[256]; /* Last error message                 */
 };
 
 /* --------------------------------------------------------------------------
@@ -137,12 +135,6 @@ uint32_t mpq_lookup_file(const mpqfs_archive_t *archive, const char *filename);
  * archive->hash_table[result].block_index.
  */
 uint32_t mpq_lookup_hash_entry(const mpqfs_archive_t *archive, const char *filename);
-
-/*
- * Set the archive's error string (printf-style).
- */
-void mpq_set_error(mpqfs_archive_t *archive, const char *fmt, ...)
-    MPQFS_PRINTF_ATTR(2, 3);
 
 #ifdef __cplusplus
 }

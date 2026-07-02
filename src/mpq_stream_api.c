@@ -12,39 +12,42 @@
 #include "mpq_stream.h"
 #include "mpqfs/mpqfs.h"
 
-mpqfs_stream_t *mpqfs_stream_open(mpqfs_archive_t *archive,
-    const char *filename)
+mpqfs_error_code mpqfs_stream_open(mpqfs_archive_t *archive,
+    const char *filename, mpqfs_stream_t **outStream)
 {
-	if (!archive || !filename)
-		return NULL;
+	*outStream = NULL;
+
+	if (!archive || !filename) {
+		return MPQFS_ERR_INVALID_ARGUMENT;
+	}
 
 	uint32_t bi = mpq_lookup_file(archive, filename);
 	if (bi == UINT32_MAX) {
-		mpq_set_error(archive, "mpqfs_stream_open: file '%s' not found", filename);
-		return NULL;
+		return MPQFS_ERR_FILE_NOT_FOUND;
 	}
 
-	return mpq_stream_open_named(archive, bi, filename);
+	return mpq_stream_open_named(archive, bi, filename, outStream);
 }
 
-mpqfs_stream_t *mpqfs_stream_open_from_hash(mpqfs_archive_t *archive,
-    uint32_t hash)
+mpqfs_error_code mpqfs_stream_open_from_hash(mpqfs_archive_t *archive,
+    uint32_t hash, mpqfs_stream_t **outStream)
 {
-	if (!archive)
-		return NULL;
+	*outStream = NULL;
+
+	if (!archive) {
+		return MPQFS_ERR_INVALID_ARGUMENT;
+	}
 
 	if (hash >= archive->header.hash_table_count) {
-		mpq_set_error(archive, "mpqfs_stream_open_from_hash: invalid hash %" PRIu32 "", hash);
-		return NULL;
+		return MPQFS_ERR_INVALID_HASH;
 	}
 
 	uint32_t bi = archive->hash_table[hash].block_index;
 	if (bi >= archive->header.block_table_count) {
-		mpq_set_error(archive, "mpqfs_stream_open_from_hash: invalid block index");
-		return NULL;
+		return MPQFS_ERR_CORRUPT_ARCHIVE;
 	}
 
-	return mpq_stream_open(archive, bi);
+	return mpq_stream_open(archive, bi, outStream);
 }
 
 void mpqfs_stream_close(mpqfs_stream_t *stream)
@@ -52,22 +55,24 @@ void mpqfs_stream_close(mpqfs_stream_t *stream)
 	mpq_stream_close(stream);
 }
 
-size_t mpqfs_stream_read(mpqfs_stream_t *stream, void *buf, size_t count)
+mpqfs_error_code mpqfs_stream_read(mpqfs_stream_t *stream, void *buf,
+    size_t count, size_t *outRead)
 {
-	return mpq_stream_read(stream, buf, count);
+	return mpq_stream_read(stream, buf, count, outRead);
 }
 
-int64_t mpqfs_stream_seek(mpqfs_stream_t *stream, int64_t offset, int whence)
+mpqfs_error_code mpqfs_stream_seek(mpqfs_stream_t *stream, int64_t offset,
+    int whence, int64_t *outPosition)
 {
-	return mpq_stream_seek(stream, offset, whence);
+	return mpq_stream_seek(stream, offset, whence, outPosition);
 }
 
-int64_t mpqfs_stream_tell(mpqfs_stream_t *stream)
+mpqfs_error_code mpqfs_stream_tell(mpqfs_stream_t *stream, int64_t *outPosition)
 {
-	return mpq_stream_tell(stream);
+	return mpq_stream_tell(stream, outPosition);
 }
 
-size_t mpqfs_stream_size(mpqfs_stream_t *stream)
+mpqfs_error_code mpqfs_stream_size(mpqfs_stream_t *stream, size_t *outSize)
 {
-	return mpq_stream_size(stream);
+	return mpq_stream_size(stream, outSize);
 }
