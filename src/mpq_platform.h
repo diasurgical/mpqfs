@@ -216,7 +216,24 @@ static inline void mpqfs_write_le32(void *p, uint32_t v)
 #endif
 
 /* -----------------------------------------------------------------------
- * 11. MPQFS_API — symbol visibility for shared / static library builds.
+ * 11. MPQFS_RET_CHECK — guard clause that returns an error code.
+ *
+ *     Shorthand for the ubiquitous
+ *       if (MPQFS_UNLIKELY(!condition)) return error_code;
+ *     guard-clause pattern. `condition` is the thing that must hold for
+ *     execution to continue (it is negated internally, same polarity as
+ *     assert()); `error_code` is returned verbatim when it does not.
+ *     Only for simple returns — if the guard needs cleanup (fclose,
+ *     free, ...) before returning, write it out by hand instead.
+ * ----------------------------------------------------------------------- */
+
+#define MPQFS_RET_CHECK(condition, error_code)                 \
+	do {                                                       \
+		if (MPQFS_UNLIKELY(!(condition))) return (error_code); \
+	} while (0)
+
+/* -----------------------------------------------------------------------
+ * 12. MPQFS_API — symbol visibility for shared / static library builds.
  *
  *     When the library is built as a static archive (the common case for
  *     game engines), all of these should expand to nothing.  We default
@@ -241,7 +258,7 @@ static inline void mpqfs_write_le32(void *p, uint32_t v)
 #endif
 
 /* -----------------------------------------------------------------------
- * 12. Struct packing — used for on-disk MPQ structures.
+ * 13. Struct packing — used for on-disk MPQ structures.
  *
  *     Usage:
  *       MPQFS_PACK_BEGIN
