@@ -199,7 +199,24 @@ static inline void mpqfs_write_le32(void *p, uint32_t v)
 #define MPQFS_UNUSED(x) ((void)(x))
 
 /* -----------------------------------------------------------------------
- * 10. MPQFS_API — symbol visibility for shared / static library builds.
+ * 10. MPQFS_UNLIKELY — branch-prediction hint for error-checking branches.
+ *
+ *     Used to mark the conditions of guard clauses (NULL/invalid-argument
+ *     checks, allocation failures, I/O failures, corrupt-data checks,
+ *     etc.) whose true branch always leads to an early failure return.
+ *     These are cold paths in normal operation, so hinting them helps
+ *     the compiler keep the hot path contiguous.  A no-op on compilers
+ *     without __builtin_expect.
+ * ----------------------------------------------------------------------- */
+
+#if defined(__GNUC__) || defined(__clang__)
+#define MPQFS_UNLIKELY(x) __builtin_expect(!!(x), 0)
+#else
+#define MPQFS_UNLIKELY(x) (x)
+#endif
+
+/* -----------------------------------------------------------------------
+ * 11. MPQFS_API — symbol visibility for shared / static library builds.
  *
  *     When the library is built as a static archive (the common case for
  *     game engines), all of these should expand to nothing.  We default
@@ -224,7 +241,7 @@ static inline void mpqfs_write_le32(void *p, uint32_t v)
 #endif
 
 /* -----------------------------------------------------------------------
- * 11. Struct packing — used for on-disk MPQ structures.
+ * 12. Struct packing — used for on-disk MPQ structures.
  *
  *     Usage:
  *       MPQFS_PACK_BEGIN
