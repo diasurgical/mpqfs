@@ -48,9 +48,9 @@
 static int MpqRawRead(mpqfs_archive_t *archive, int64_t offset,
     void *buf, size_t count)
 {
-	if (fseek(archive->fp, (long)offset, SEEK_SET) != 0)
+	if (MPQFS_UNLIKELY(fseek(archive->fp, (long)offset, SEEK_SET) != 0))
 		return -1;
-	if (fread(buf, 1, count, archive->fp) != count)
+	if (MPQFS_UNLIKELY(fread(buf, 1, count, archive->fp) != count))
 		return -1;
 	return 0;
 }
@@ -80,14 +80,14 @@ static mpqfs_error_code MpqStreamLoadSector(mpqfs_stream_t *stream, uint32_t sec
 		 * Compressed file — use the sector offset table to find the
 		 * compressed data for this sector.
 		 */
-		if (!stream->sector_offsets) {
+		if (MPQFS_UNLIKELY(!stream->sector_offsets)) {
 			return MPQFS_ERR_CORRUPT_ARCHIVE;
 		}
 
 		uint32_t sectorStart = stream->sector_offsets[sectorIdx];
 		uint32_t sectorEnd = stream->sector_offsets[sectorIdx + 1];
 
-		if (sectorEnd < sectorStart) {
+		if (MPQFS_UNLIKELY(sectorEnd < sectorStart)) {
 			return MPQFS_ERR_CORRUPT_ARCHIVE;
 		}
 
@@ -106,9 +106,9 @@ static mpqfs_error_code MpqStreamLoadSector(mpqfs_stream_t *stream, uint32_t sec
 		 * the sector is stored uncompressed (the compressor gave up).
 		 */
 		if (compSize == expect) {
-			if (MpqRawRead(archive, fileAbs + sectorStart,
-			        stream->sector_buf, expect)
-			    != 0) {
+			if (MPQFS_UNLIKELY(MpqRawRead(archive, fileAbs + sectorStart,
+			                       stream->sector_buf, expect)
+			        != 0)) {
 				return MPQFS_ERR_IO;
 			}
 			/* Decrypt in-place if needed. */
@@ -126,7 +126,7 @@ static mpqfs_error_code MpqStreamLoadSector(mpqfs_stream_t *stream, uint32_t sec
 		/* Ensure the reusable compressed-data buffer is large enough. */
 		if (compSize > stream->comp_buf_cap) {
 			uint8_t *newBuf = (uint8_t *)realloc(stream->comp_buf, compSize);
-			if (!newBuf) {
+			if (MPQFS_UNLIKELY(!newBuf)) {
 				return MPQFS_ERR_OUT_OF_MEMORY;
 			}
 			stream->comp_buf = newBuf;
@@ -134,9 +134,9 @@ static mpqfs_error_code MpqStreamLoadSector(mpqfs_stream_t *stream, uint32_t sec
 		}
 		uint8_t *compBuf = stream->comp_buf;
 
-		if (MpqRawRead(archive, fileAbs + sectorStart,
-		        compBuf, compSize)
-		    != 0) {
+		if (MPQFS_UNLIKELY(MpqRawRead(archive, fileAbs + sectorStart,
+		                       compBuf, compSize)
+		        != 0)) {
 			return MPQFS_ERR_IO;
 		}
 
@@ -156,7 +156,7 @@ static mpqfs_error_code MpqStreamLoadSector(mpqfs_stream_t *stream, uint32_t sec
 			 */
 			rc = pk_explode_sector(compBuf, compSize,
 			    stream->sector_buf, expect);
-			if (rc != PK_OK) {
+			if (MPQFS_UNLIKELY(rc != PK_OK)) {
 				return MPQFS_ERR_DECOMPRESS_FAILED;
 			}
 		} else if (flags & MPQ_FILE_COMPRESS) {
@@ -164,7 +164,7 @@ static mpqfs_error_code MpqStreamLoadSector(mpqfs_stream_t *stream, uint32_t sec
 			 * Multi-method compression — the first byte of the sector
 			 * indicates the compression method(s) used.
 			 */
-			if (compSize < 1) {
+			if (MPQFS_UNLIKELY(compSize < 1)) {
 				return MPQFS_ERR_CORRUPT_ARCHIVE;
 			}
 
@@ -186,7 +186,7 @@ static mpqfs_error_code MpqStreamLoadSector(mpqfs_stream_t *stream, uint32_t sec
 			if (compMethod & MPQ_COMP_PKWARE) {
 				rc = pk_explode_sector(srcData, srcLen,
 				    stream->sector_buf, expect);
-				if (rc != PK_OK) {
+				if (MPQFS_UNLIKELY(rc != PK_OK)) {
 					return MPQFS_ERR_DECOMPRESS_FAILED;
 				}
 				/* Output is now in sector_buf; if another method needs
@@ -200,7 +200,7 @@ static mpqfs_error_code MpqStreamLoadSector(mpqfs_stream_t *stream, uint32_t sec
 				uLongf destLen = (uLongf)expect;
 				int zrc = uncompress(stream->sector_buf, &destLen,
 				    srcData, (uLong)srcLen);
-				if (zrc != Z_OK) {
+				if (MPQFS_UNLIKELY(zrc != Z_OK)) {
 					return MPQFS_ERR_DECOMPRESS_FAILED;
 				}
 #else
@@ -216,7 +216,7 @@ static mpqfs_error_code MpqStreamLoadSector(mpqfs_stream_t *stream, uint32_t sec
 				    (char *)stream->sector_buf, &destLen,
 				    (char *)srcData, (unsigned int)srcLen,
 				    0, 0);
-				if (brc != BZ_OK) {
+				if (MPQFS_UNLIKELY(brc != BZ_OK)) {
 					return MPQFS_ERR_DECOMPRESS_FAILED;
 				}
 #else
@@ -233,7 +233,7 @@ static mpqfs_error_code MpqStreamLoadSector(mpqfs_stream_t *stream, uint32_t sec
 #if defined(MPQFS_HAS_BZIP2) && MPQFS_HAS_BZIP2
 				supported |= MPQ_COMP_BZIP2;
 #endif
-				if (compMethod & ~supported) {
+				if (MPQFS_UNLIKELY(compMethod & ~supported)) {
 					return MPQFS_ERR_UNSUPPORTED_COMPRESSION;
 				}
 			}
@@ -251,7 +251,7 @@ static mpqfs_error_code MpqStreamLoadSector(mpqfs_stream_t *stream, uint32_t sec
 	   */
 	int64_t sectorAbs = fileAbs + ((int64_t)sectorIdx * (int64_t)stream->sector_size);
 
-	if (MpqRawRead(archive, sectorAbs, stream->sector_buf, expect) != 0) {
+	if (MPQFS_UNLIKELY(MpqRawRead(archive, sectorAbs, stream->sector_buf, expect) != 0)) {
 		return MPQFS_ERR_IO;
 	}
 
@@ -284,27 +284,27 @@ mpqfs_error_code mpq_stream_open_named(mpqfs_archive_t *archive,
 {
 	*outStream = NULL;
 
-	if (!archive) {
+	if (MPQFS_UNLIKELY(!archive)) {
 		return MPQFS_ERR_INVALID_ARGUMENT;
 	}
 
-	if (blockIndex >= archive->header.block_table_count) {
+	if (MPQFS_UNLIKELY(blockIndex >= archive->header.block_table_count)) {
 		return MPQFS_ERR_INVALID_ARGUMENT;
 	}
 
 	const mpq_block_entry_t *block = &archive->block_table[blockIndex];
 
-	if (!(block->flags & MPQ_FILE_EXISTS)) {
+	if (MPQFS_UNLIKELY(!(block->flags & MPQ_FILE_EXISTS))) {
 		return MPQFS_ERR_FILE_NOT_FOUND;
 	}
 
 	/* If the file is encrypted, we MUST have the filename to derive the key. */
-	if ((block->flags & MPQ_FILE_ENCRYPTED) && !filename) {
+	if (MPQFS_UNLIKELY((block->flags & MPQ_FILE_ENCRYPTED) && !filename)) {
 		return MPQFS_ERR_ENCRYPTED_NO_KEY;
 	}
 
 	mpqfs_stream_t *stream = (mpqfs_stream_t *)calloc(1, sizeof(*stream));
-	if (!stream) {
+	if (MPQFS_UNLIKELY(!stream)) {
 		return MPQFS_ERR_OUT_OF_MEMORY;
 	}
 
@@ -343,7 +343,7 @@ mpqfs_error_code mpq_stream_open_named(mpqfs_archive_t *archive,
 
 	/* Allocate the sector cache buffer. */
 	stream->sector_buf = (uint8_t *)malloc(stream->sector_size);
-	if (!stream->sector_buf) {
+	if (MPQFS_UNLIKELY(!stream->sector_buf)) {
 		free(stream);
 		return MPQFS_ERR_OUT_OF_MEMORY;
 	}
@@ -359,7 +359,7 @@ mpqfs_error_code mpq_stream_open_named(mpqfs_archive_t *archive,
 		size_t tableBytes = (size_t)tableEntries * sizeof(uint32_t);
 
 		stream->sector_offsets = (uint32_t *)malloc(tableBytes);
-		if (!stream->sector_offsets) {
+		if (MPQFS_UNLIKELY(!stream->sector_offsets)) {
 			free(stream->sector_buf);
 			free(stream);
 			return MPQFS_ERR_OUT_OF_MEMORY;
@@ -370,14 +370,14 @@ mpqfs_error_code mpq_stream_open_named(mpqfs_archive_t *archive,
 
 		/* Read the raw sector offset table from the archive. */
 		uint8_t *rawTable = (uint8_t *)malloc(tableBytes);
-		if (!rawTable) {
+		if (MPQFS_UNLIKELY(!rawTable)) {
 			free(stream->sector_offsets);
 			free(stream->sector_buf);
 			free(stream);
 			return MPQFS_ERR_OUT_OF_MEMORY;
 		}
 
-		if (MpqRawRead(archive, absOffset, rawTable, tableBytes) != 0) {
+		if (MPQFS_UNLIKELY(MpqRawRead(archive, absOffset, rawTable, tableBytes) != 0)) {
 			free(rawTable);
 			free(stream->sector_offsets);
 			free(stream->sector_buf);
@@ -400,7 +400,7 @@ mpqfs_error_code mpq_stream_open_named(mpqfs_archive_t *archive,
 		}
 
 		/* Basic sanity check on the offset table. */
-		if (stream->sector_offsets[0] != tableBytes) {
+		if (MPQFS_UNLIKELY(stream->sector_offsets[0] != tableBytes)) {
 			free(stream->sector_offsets);
 			free(stream->sector_buf);
 			free(stream);
@@ -419,7 +419,7 @@ mpqfs_error_code mpq_stream_open_named(mpqfs_archive_t *archive,
 		if (stream->file_size > stream->sector_size) {
 			free(stream->sector_buf);
 			stream->sector_buf = (uint8_t *)malloc(stream->file_size);
-			if (!stream->sector_buf) {
+			if (MPQFS_UNLIKELY(!stream->sector_buf)) {
 				free(stream);
 				return MPQFS_ERR_OUT_OF_MEMORY;
 			}
@@ -458,7 +458,7 @@ mpqfs_error_code mpq_stream_read(mpqfs_stream_t *stream, void *buf,
 {
 	*outRead = 0;
 
-	if (!stream || !buf) {
+	if (MPQFS_UNLIKELY(!stream || !buf)) {
 		return MPQFS_ERR_INVALID_ARGUMENT;
 	}
 
@@ -483,7 +483,7 @@ mpqfs_error_code mpq_stream_read(mpqfs_stream_t *stream, void *buf,
 
 		/* Load the sector (decompressing if necessary). */
 		mpqfs_error_code rc = MpqStreamLoadSector(stream, sectorIdx);
-		if (rc != MPQFS_OK) {
+		if (MPQFS_UNLIKELY(rc != MPQFS_OK)) {
 			if (copied > 0) {
 				*outRead = copied;
 				return MPQFS_OK;
@@ -515,7 +515,7 @@ mpqfs_error_code mpq_stream_seek(mpqfs_stream_t *stream, int64_t offset,
 {
 	*outPosition = 0;
 
-	if (!stream) {
+	if (MPQFS_UNLIKELY(!stream)) {
 		return MPQFS_ERR_INVALID_ARGUMENT;
 	}
 
@@ -553,7 +553,7 @@ mpqfs_error_code mpq_stream_seek(mpqfs_stream_t *stream, int64_t offset,
 mpqfs_error_code mpq_stream_tell(mpqfs_stream_t *stream, int64_t *outPosition)
 {
 	*outPosition = 0;
-	if (!stream) {
+	if (MPQFS_UNLIKELY(!stream)) {
 		return MPQFS_ERR_INVALID_ARGUMENT;
 	}
 	*outPosition = (int64_t)stream->position;
@@ -563,7 +563,7 @@ mpqfs_error_code mpq_stream_tell(mpqfs_stream_t *stream, int64_t *outPosition)
 mpqfs_error_code mpq_stream_size(mpqfs_stream_t *stream, size_t *outSize)
 {
 	*outSize = 0;
-	if (!stream) {
+	if (MPQFS_UNLIKELY(!stream)) {
 		return MPQFS_ERR_INVALID_ARGUMENT;
 	}
 	*outSize = (size_t)stream->file_size;

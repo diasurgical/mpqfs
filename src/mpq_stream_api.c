@@ -17,12 +17,12 @@ mpqfs_error_code mpqfs_stream_open(mpqfs_archive_t *archive,
 {
 	*outStream = NULL;
 
-	if (!archive || !filename) {
+	if (MPQFS_UNLIKELY(!archive || !filename)) {
 		return MPQFS_ERR_INVALID_ARGUMENT;
 	}
 
 	uint32_t bi = mpq_lookup_file(archive, filename);
-	if (bi == UINT32_MAX) {
+	if (MPQFS_UNLIKELY(bi == UINT32_MAX)) {
 		return MPQFS_ERR_FILE_NOT_FOUND;
 	}
 
@@ -34,16 +34,16 @@ mpqfs_error_code mpqfs_stream_open_from_hash(mpqfs_archive_t *archive,
 {
 	*outStream = NULL;
 
-	if (!archive) {
+	if (MPQFS_UNLIKELY(!archive)) {
 		return MPQFS_ERR_INVALID_ARGUMENT;
 	}
 
-	if (hash >= archive->header.hash_table_count) {
+	if (MPQFS_UNLIKELY(hash >= archive->header.hash_table_count)) {
 		return MPQFS_ERR_INVALID_HASH;
 	}
 
 	uint32_t bi = archive->hash_table[hash].block_index;
-	if (bi >= archive->header.block_table_count) {
+	if (MPQFS_UNLIKELY(bi >= archive->header.block_table_count)) {
 		return MPQFS_ERR_CORRUPT_ARCHIVE;
 	}
 
