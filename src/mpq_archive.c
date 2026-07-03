@@ -12,6 +12,7 @@
 
 #include "mpq_archive.h"
 #include "mpq_crypto.h"
+#include "mpq_fopen.h"
 #include "mpq_platform.h"
 #include "mpq_stream.h"
 #include "mpqfs/mpqfs.h"
@@ -294,7 +295,7 @@ mpqfs_error_code mpqfs_open(const char *path, mpqfs_archive_t **outArchive)
 
 	MPQFS_RET_CHECK(path, MPQFS_ERR_INVALID_ARGUMENT);
 
-	FILE *fp = fopen(path, "rb");
+	FILE *fp = fopen_utf8(path, "rb");
 	MPQFS_RET_CHECK(fp, MPQFS_ERR_IO);
 
 #ifdef MPQFS_FILE_BUFFER_SIZE

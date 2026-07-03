@@ -52,6 +52,7 @@ add_library(mpqfs_obj OBJECT
     src/mpq_archive.c
     src/mpq_crypto.c
     src/mpq_error.c
+    src/mpq_fopen.c
     src/mpq_pkware.c
     src/mpq_stream.c
     src/mpq_stream_api.c

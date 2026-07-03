@@ -38,21 +38,21 @@
  * memory.  The header and tables are written (or rewritten) during
  * mpqfs_writer_close() once all metadata is known.
  */
+#include "mpq_writer.h"
 
-#include "mpq_explode.h"
 #include <inttypes.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "mpq_archive.h"
 #include "mpq_crypto.h"
+#include "mpq_explode.h"
+#include "mpq_fopen.h"
 #include "mpq_implode.h"
 #include "mpq_platform.h"
-#include "mpq_writer.h"
-
-#include <stddef.h>
-#include <stdlib.h>
-#include <string.h>
 
 /* -----------------------------------------------------------------------
  * Internal: round up to the next power of two (minimum 1)
@@ -183,7 +183,7 @@ mpqfs_error_code mpqfs_writer_create(const char *path,
 
 	MPQFS_RET_CHECK(path, MPQFS_ERR_INVALID_ARGUMENT);
 
-	FILE *fp = fopen(path, "wb");
+	FILE *fp = fopen_utf8(path, "wb");
 	MPQFS_RET_CHECK(fp, MPQFS_ERR_IO);
 
 #ifdef MPQFS_FILE_BUFFER_SIZE
