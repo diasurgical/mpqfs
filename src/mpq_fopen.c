@@ -16,6 +16,8 @@
 #endif
 
 #if defined(_WIN32) && !defined(MPQFS_WINDOWS_NO_WCHAR)
+#include <stddef.h>
+#include <stdint.h>
 #include <stdlib.h>
 
 /* Suppress definitions of `min` and `max` macros by <windows.h>: */
