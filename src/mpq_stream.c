@@ -27,6 +27,7 @@
 #include "mpq_crypto.h"
 #include "mpq_explode.h"
 #include "mpq_platform.h"
+#include "mpqfs/mpqfs.h"
 #include <inttypes.h>
 #include <stdint.h>
 
@@ -107,8 +108,16 @@ static mpqfs_error_code MpqStreamLoadSector(mpqfs_stream_t *stream, uint32_t sec
 			if (stream->file_key != 0) {
 				/* Truncate to complete uint32_t words (matching StormLib). */
 				size_t dwords = expect / 4;
-				mpq_decrypt_block((uint32_t *)stream->sector_buf,
-				    dwords, stream->file_key + sectorIdx);
+				uint32_t *words = (uint32_t *)stream->sector_buf;
+				mpqfs_decrypt_block(words, dwords, stream->file_key + sectorIdx);
+#if MPQFS_BIG_ENDIAN
+				/* mpqfs_decrypt_block leaves the result in host order, which
+				 * is right for tables read as native uint32_t but wrong here:
+				 * this buffer is an opaque byte stream whose consumers expect
+				 * the on-disk little-endian layout. Swap back. */
+				for (size_t i = 0; i < dwords; i++)
+					words[i] = mpqfs_le32(words[i]);
+#endif
 			}
 			stream->cached_sector = sectorIdx;
 			stream->cached_sector_len = expect;
@@ -131,8 +140,14 @@ static mpqfs_error_code MpqStreamLoadSector(mpqfs_stream_t *stream, uint32_t sec
 		/* Decrypt the compressed data before decompression. */
 		if (stream->file_key != 0) {
 			size_t dwords = compSize / 4;
-			mpq_decrypt_block((uint32_t *)compBuf,
-			    dwords, stream->file_key + sectorIdx);
+			uint32_t *words = (uint32_t *)compBuf;
+			mpqfs_decrypt_block(words, dwords, stream->file_key + sectorIdx);
+#if MPQFS_BIG_ENDIAN
+			/* Swap back to on-disk little-endian order — the decompressors
+			 * below read this as a raw byte stream. */
+			for (size_t i = 0; i < dwords; i++)
+				words[i] = mpqfs_le32(words[i]);
+#endif
 		}
 
 		int rc;
@@ -232,8 +247,14 @@ static mpqfs_error_code MpqStreamLoadSector(mpqfs_stream_t *stream, uint32_t sec
 	/* Decrypt in-place if needed. */
 	if (stream->file_key != 0) {
 		size_t dwords = expect / 4;
-		mpq_decrypt_block((uint32_t *)stream->sector_buf,
-		    dwords, stream->file_key + sectorIdx);
+		uint32_t *words = (uint32_t *)stream->sector_buf;
+		mpqfs_decrypt_block(words, dwords, stream->file_key + sectorIdx);
+#if MPQFS_BIG_ENDIAN
+		/* Swap back to on-disk little-endian order — this buffer is handed
+		 * to consumers as a raw byte stream. */
+		for (size_t i = 0; i < dwords; i++)
+			words[i] = mpqfs_le32(words[i]);
+#endif
 	}
 
 	stream->cached_sector = sectorIdx;
