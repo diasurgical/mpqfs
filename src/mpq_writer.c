@@ -53,6 +53,7 @@
 #include "mpq_fopen.h"
 #include "mpq_implode.h"
 #include "mpq_platform.h"
+#include "mpqfs/mpqfs.h"
 
 /* -----------------------------------------------------------------------
  * Internal: round up to the next power of two (minimum 1)
@@ -810,9 +811,10 @@ static uint32_t *MpqBuildHashTable(mpqfs_writer_t *writer)
 		}
 	}
 
-	/* Encrypt the hash table in-place. */
+	/* Encrypt the hash table in-place. The public wrapper takes host order
+	 * in and writes little-endian out, which is what goes to disk. */
 	uint32_t key = mpq_hash_string("(hash table)", MPQ_HASH_FILE_KEY);
-	mpq_encrypt_block(table, dwordCount, key);
+	mpqfs_encrypt_block(table, dwordCount, key);
 
 	return table;
 }
@@ -859,9 +861,10 @@ static uint32_t *MpqBuildBlockTable(mpqfs_writer_t *writer)
 		table[base + 3] = writer->files[i].flags;           /* flags */
 	}
 
-	/* Encrypt the block table in-place. */
+	/* Encrypt the block table in-place. The public wrapper takes host order
+	 * in and writes little-endian out, which is what goes to disk. */
 	uint32_t key = mpq_hash_string("(block table)", MPQ_HASH_FILE_KEY);
-	mpq_encrypt_block(table, dwordCount, key);
+	mpqfs_encrypt_block(table, dwordCount, key);
 
 	return table;
 }
