@@ -131,7 +131,7 @@ static mpqfs_error_code MpqWriterInit(FILE *fp, int ownsFd,
 	/* Compute data_start: header + block table + hash table.
 	 * File data will be written starting at this offset. */
 	uint32_t tableEntryBytes = writer->hash_table_size * 16;
-	writer->data_start = MPQ_HEADER_SIZE_V1 + tableEntryBytes + tableEntryBytes;
+	writer->data_start = MPQ_HEADER_SIZE_V1_WITH_PADDING + tableEntryBytes + tableEntryBytes;
 	writer->data_cursor = writer->data_start;
 
 	/* Write placeholder zeroes for the header + tables region so that
@@ -900,7 +900,7 @@ mpqfs_error_code mpqfs_writer_close(mpqfs_writer_t *writer)
 		uint32_t hashTableSize = writer->hash_table_size;
 		uint32_t tableEntryBytes = hashTableSize * 16;
 
-		uint32_t blockTableOffset = headerSize;
+		uint32_t blockTableOffset = MPQ_HEADER_SIZE_V1_WITH_PADDING;
 		uint32_t hashTableOffset = blockTableOffset + tableEntryBytes;
 
 		uint32_t archiveSize = writer->data_cursor;
@@ -931,7 +931,7 @@ mpqfs_error_code mpqfs_writer_close(mpqfs_writer_t *writer)
 
 		/* Write the MPQ header. */
 		{
-			uint8_t hdr[MPQ_HEADER_SIZE_V1];
+			uint8_t hdr[MPQ_HEADER_SIZE_V1_WITH_PADDING];
 			memset(hdr, 0, sizeof(hdr));
 
 			mpqfs_write_le32(hdr + 0, MPQ_SIGNATURE);

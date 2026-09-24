@@ -1445,9 +1445,10 @@ static void TestWriterSaveFileLayout(void)
 	uint32_t hashTableCount = mpqfs_read_le32(hdr + 24);
 	uint32_t blockTableCount = mpqfs_read_le32(hdr + 28);
 
-	/* Block table must be right after the header. */
-	ASSERT_EQ_U32(blockTableOffset, headerSize);
-	ASSERT_EQ_U32(blockTableOffset, 32);
+	/* Accounting for padding, block table must be right after the header. */
+	const uint32_t padding = 72;
+	ASSERT_EQ_U32(blockTableOffset, headerSize + padding);
+	ASSERT_EQ_U32(blockTableOffset, 32 + padding);
 
 	/* Hash table must follow the block table. */
 	ASSERT_EQ_U32(hashTableOffset, blockTableOffset + tableEntryBytes);
@@ -1480,7 +1481,7 @@ static void TestWriterSaveFileLayout(void)
 	/* Confirm the parsed header matches. */
 	ASSERT_EQ_U32(archive->header.hash_table_count, hashTableSize);
 	ASSERT_EQ_U32(archive->header.block_table_count, hashTableSize);
-	ASSERT_EQ_U32(archive->header.block_table_offset, 32);
+	ASSERT_EQ_U32(archive->header.block_table_offset, 32 + padding);
 
 	for (int i = 0; i < nfiles; i++) {
 		ASSERT_TRUE(mpqfs_has_file(archive, names[i]));
