@@ -26,6 +26,7 @@ extern "C" {
 
 #define MPQ_SIGNATURE 0x1A51504DU /* "MPQ\x1a" as little-endian uint32 */
 #define MPQ_HEADER_SIZE_V1 32
+#define MPQ_HEADER_SIZE_V1_WITH_PADDING (MPQ_HEADER_SIZE_V1 + 72)
 
 /* Sentinel values in the hash table */
 #define MPQ_HASH_ENTRY_EMPTY 0xFFFFFFFFU
