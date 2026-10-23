@@ -67,8 +67,8 @@ typedef struct mpqfs_writer_file mpqfs_writer_file_t;
 #define MPQFS_WRITER_INITIAL_CAPACITY 16
 
 struct mpqfs_writer {
-	FILE *fp;    /* Destination file handle                   */
-	int owns_fd; /* Non-zero if we should fclose(fp)         */
+	mpqfs_io_t io; /* Custom implementation for input/output */
+	void *ds;      /* I/O data source */
 
 	uint32_t hash_table_size;   /* Number of hash table entries (power of 2)*/
 	uint16_t sector_size_shift; /* Sector size = 512 << shift (default 3)   */

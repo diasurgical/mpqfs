@@ -108,6 +108,28 @@ extern "C" {
 #endif
 
 /* -----------------------------------------------------------------------
+ * User-defined data sources
+ *
+ * In addition to file descriptors, MPQ archives and writers can be
+ * initialized from any source of data that supports a similar API, with
+ * function calls for read, write, seek, and close.
+ * ----------------------------------------------------------------------- */
+
+typedef struct mpqfs_io {
+	/* Read data in from I/O data source */
+	size_t (*read)(void *, void *, size_t);
+
+	/* Write data out to I/O data source */
+	size_t (*write)(void *, void *, size_t);
+
+	/* Seek to a position in I/O data source */
+	int (*seek)(void *, long, int);
+
+	/* Closes the I/O data source */
+	int (*close)(void *);
+} mpqfs_io_t;
+
+/* -----------------------------------------------------------------------
  * Opaque handles
  *
  * All API functions that take an archive pointer require a non-NULL
@@ -251,6 +273,22 @@ MPQFS_API mpqfs_error_code mpqfs_open_fp(FILE *fp, mpqfs_archive_t **out_archive
 MPQFS_API mpqfs_error_code mpqfs_open_fd(int fd, mpqfs_archive_t **out_archive);
 
 #endif /* MPQFS_HAS_FDOPEN */
+
+/**
+ * Open an MPQ archive from a user-defined I/O data source.
+ *
+ * The user must define read, seek, and close functions for the I/O data
+ * source by assigning the members of the mpqfs_io_t struct. The pointer
+ * to the data source will be passed as the first argument of each
+ * function call. Call mpqfs_close() when done.
+ *
+ * @param io           An interface for a custom I/O implementation.
+ * @param ds           User-defined source of the I/O data.
+ * @param out_archive  Receives the opaque archive handle on success, or
+ *                      NULL on failure.  Must not be NULL.
+ * @return              MPQFS_OK on success, or an error code.
+ */
+MPQFS_API mpqfs_error_code mpqfs_open_io(const mpqfs_io_t *io, void *ds, mpqfs_archive_t **out_archive);
 
 /**
  * Create an independent clone of an open archive.
@@ -595,6 +633,25 @@ MPQFS_API mpqfs_error_code mpqfs_writer_create_fd(int fd,
     uint32_t hash_table_size, mpqfs_writer_t **out_writer);
 
 #endif /* MPQFS_HAS_FDOPEN */
+
+/**
+ * Create a new MPQ archive writer targeting a user-defined I/O data
+ * source.
+ *
+ * The user must define write, seek, and close functions for the I/O data
+ * source by assigning the members of the mpqfs_io_t struct. The pointer
+ * to the data source will be passed as the first argument of each
+ * function call. Call mpqfs_close() when done.
+ *
+ * @param io               An interface for a custom I/O implementation.
+ * @param ds               User-defined source of the I/O data.
+ * @param hash_table_size  Desired number of hash table entries (see above).
+ * @param out_writer       Receives the writer handle on success, or NULL
+ *                          on failure.  Must not be NULL.
+ * @return                  MPQFS_OK on success, or an error code.
+ */
+MPQFS_API mpqfs_error_code mpqfs_writer_create_io(const mpqfs_io_t *io,
+    void *ds, uint32_t hash_table_size, mpqfs_writer_t **out_writer);
 
 /**
  * Add a file to the archive being constructed.
