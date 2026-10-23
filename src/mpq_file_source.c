@@ -28,7 +28,7 @@ static size_t mpqfs_fp_read(void *ds, void *buffer, size_t size)
 	return fread(buffer, 1, size, fp->f);
 }
 
-static size_t mpqfs_fp_write(void *ds, void *buffer, size_t size)
+static size_t mpqfs_fp_write(void *ds, const void *buffer, size_t size)
 {
 	mpqfs_fp_t *fp = (mpqfs_fp_t *)ds;
 	return fwrite(buffer, 1, size, fp->f);
