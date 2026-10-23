@@ -120,7 +120,7 @@ typedef struct mpqfs_io {
 	size_t (*read)(void *, void *, size_t);
 
 	/* Write data out to I/O data source */
-	size_t (*write)(void *, void *, size_t);
+	size_t (*write)(void *, const void *, size_t);
 
 	/* Seek to a position in I/O data source */
 	int (*seek)(void *, long, int);
