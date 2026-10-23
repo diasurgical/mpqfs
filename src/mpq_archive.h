@@ -104,8 +104,8 @@ MPQFS_STATIC_ASSERT(sizeof(mpq_block_entry_t) == 16, "mpq_block_entry_t must be 
  * -------------------------------------------------------------------------- */
 
 struct mpqfs_archive {
-	FILE *fp;    /* Underlying file handle             */
-	int owns_fd; /* Non-zero if we should fclose(fp)   */
+	mpqfs_io_t io; /* Custom implementation for input/output */
+	void *ds;      /* I/O data source */
 
 	int64_t archive_offset; /* Byte offset of MPQ header in file  */
 	mpq_header_t header;    /* Parsed archive header              */

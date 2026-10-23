@@ -38,7 +38,6 @@
 #include <bzlib.h>
 #endif
 
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -49,8 +48,8 @@
 static int MpqRawRead(mpqfs_archive_t *archive, int64_t offset,
     void *buf, size_t count)
 {
-	MPQFS_RET_CHECK(fseek(archive->fp, (long)offset, SEEK_SET) == 0, -1);
-	MPQFS_RET_CHECK(fread(buf, 1, count, archive->fp) == count, -1);
+	MPQFS_RET_CHECK(archive->io.seek(archive->ds, (long)offset, SEEK_SET) == 0, -1);
+	MPQFS_RET_CHECK(archive->io.read(archive->ds, buf, count) == count, -1);
 	return 0;
 }
 
